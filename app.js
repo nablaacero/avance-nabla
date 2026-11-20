@@ -40,7 +40,7 @@
   async function indexar() {
     estado("Leyendo propiedades de los modelos cargados…");
     var modelos = await API.viewer.getObjects();
-    var asm = {}, partes = {};
+    var asm = {}, partes = {}, asmSin = [], marcaPieza = {};
     var total = 0;
     for (var a = 0; a < modelos.length; a++) {
       var mid = modelos[a].modelId;
@@ -50,19 +50,45 @@
         var props = await API.viewer.getObjectProperties(mid, lote);
         props.forEach(function (o) {
           var marca = L.marcaDeObjeto(o, C.propiedadesMarca);
-          if (!marca) return;
-          var cls = String(o.class || "").toUpperCase();
-          var dest = cls.indexOf("ASSEMBLY") >= 0 ? asm : partes;
-          (dest[marca] = dest[marca] || []).push({ modelId: mid, id: o.id });
+          var esAsm = String(o.class || "").toUpperCase().indexOf("ASSEMBLY") >= 0;
+          if (!marca) { if (esAsm) asmSin.push({ modelId: mid, id: o.id }); return; }
+          if (esAsm) (asm[marca] = asm[marca] || []).push({ modelId: mid, id: o.id });
+          else { (partes[marca] = partes[marca] || []).push({ modelId: mid, id: o.id }); marcaPieza[mid + ":" + o.id] = marca; }
         });
         total += lote.length;
         estado("Leyendo propiedades… " + total + " objetos");
       }
     }
+    // ensambles sin marca propia (ej. Advance Steel): la marca se toma de sus piezas
+    var cubiertas = {};
+    for (var u = 0; u < asmSin.length; u += 40) {
+      var lote0 = asmSin.slice(u, u + 40);
+      var hh = await Promise.all(lote0.map(async function (x) {
+        try { return await API.viewer.getHierarchyChildren(x.modelId, [x.id], 4, true); } catch (e) { return []; }
+      }));
+      lote0.forEach(function (x, j) {
+        var ids = (hh[j] || []).map(function (e) { return e.id; });
+        var m = null;
+        for (var q = 0; q < ids.length && !m; q++) m = marcaPieza[x.modelId + ":" + ids[q]];
+        if (!m) return;
+        ids.forEach(function (i) { cubiertas[x.modelId + ":" + i] = 1; });
+        (asm[m] = asm[m] || []).push({ modelId: x.modelId, id: x.id, hijos: ids });
+      });
+      estado("Leyendo ensambles… " + Math.min(u + 40, asmSin.length) + "/" + asmSin.length);
+    }
+    Object.keys(partes).forEach(function (m) {
+      partes[m] = partes[m].filter(function (x) { return !cubiertas[x.modelId + ":" + x.id]; });
+      if (!partes[m].length) delete partes[m];
+    });
     // marcas con objeto ensamble: cada ensamble es una pieza física (se colorea con sus hijos)
     var idx = {};
     var listaAsm = [];
-    Object.keys(asm).forEach(function (m) { asm[m].forEach(function (x) { listaAsm.push({ m: m, x: x }); }); });
+    Object.keys(asm).forEach(function (m) {
+      asm[m].forEach(function (x) {
+        if (x.hijos) (idx[m] = idx[m] || []).push({ modelId: x.modelId, ids: [x.id].concat(x.hijos) });
+        else listaAsm.push({ m: m, x: x });
+      });
+    });
     for (var t = 0; t < listaAsm.length; t += 40) {
       var lote1 = listaAsm.slice(t, t + 40);
       var hijos = await Promise.all(lote1.map(async function (it) {
@@ -287,6 +313,17 @@
       (p.properties || []).forEach(function (s) {
         (s.properties || []).forEach(function (q) { txt += s.name + "." + q.name + " = " + q.value + "\n"; });
       });
+      try {
+        var hijos = await API.viewer.getHierarchyChildren(mid, [id], 4, false);
+        if (hijos && hijos.length) {
+          var hp = (await API.viewer.getObjectProperties(mid, [hijos[0].id]))[0] || {};
+          txt += "\n--- Primera pieza del ensamble (" + (hp.class || "") + ") ---\nProduct.Name: " + (hp.product && hp.product.name || "") +
+            "\nMarca detectada: " + (L.marcaDeObjeto(hp, C.propiedadesMarca) || "(ninguna)") + "\n";
+          (hp.properties || []).forEach(function (s) {
+            (s.properties || []).forEach(function (q) { txt += s.name + "." + q.name + " = " + q.value + "\n"; });
+          });
+        }
+      } catch (e) {}
       try {
         var padres = await API.viewer.getHierarchyParents(mid, [id], 4, false);
         if (padres && padres.length) {

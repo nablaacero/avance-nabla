@@ -40,6 +40,7 @@ window.CONFIG = {
     "Tekla Assembly.ASSEMBLY_POS",
     "Assembly.ASSEMBLY_POS",
     "Part Properties.Assembly Mark",
+    "Nabla Aceros.MainPartMark",
     "Nabla Aceros.Main Part",
     "Nabla Aceros.Marca",
     "Identity Data.Mark",

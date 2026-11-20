@@ -26,9 +26,9 @@
       if (set === "Product") {
         // el nombre de producto solo se usa en objetos ensamble (en las piezas es "BEAM", "PLATE"…)
         if (String(obj.class || "").toUpperCase().indexOf("ASSEMBLY") < 0) continue;
-        if (obj.product && obj.product[prop.charAt(0).toLowerCase() + prop.slice(1)]) {
-          return normalizarMarca(obj.product[prop.charAt(0).toLowerCase() + prop.slice(1)]);
-        }
+        var pv = obj.product && obj.product[prop.charAt(0).toLowerCase() + prop.slice(1)];
+        // una marca debe tener al menos una letra (descarta nombres como "-10033")
+        if (pv && /[A-Za-z]/.test(String(pv))) return normalizarMarca(pv);
         continue;
       }
       var sets = obj.properties || [];
