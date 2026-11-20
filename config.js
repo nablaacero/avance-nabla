@@ -47,6 +47,15 @@ window.CONFIG = {
     "Product.Name"          // solo en objetos ensamble
   ],
 
+  // Dónde buscar el peso (kg). Si el ensamble no lo trae, se suman sus piezas.
+  propiedadesPeso: [
+    "Assembly.WEIGHT",
+    "Tekla Assembly.Weight",
+    "Nabla Aceros.WeightNet_kg",
+    "Tekla Common.Weight",
+    "Part Properties.Weight"
+  ],
+
   // Número de proyecto: se toma de los primeros dígitos del nombre del proyecto
   // de Trimble Connect (ej. "1256 Amatitlán" -> 1256). Se puede cambiar en el panel.
   patronProyecto: "^\\s*(\\d{3,5})",

@@ -40,7 +40,7 @@
   async function indexar() {
     estado("Leyendo propiedades de los modelos cargados…");
     var modelos = await API.viewer.getObjects();
-    var asm = {}, partes = {}, asmSin = [], marcaPieza = {};
+    var asm = {}, partes = {}, asmSin = [], marcaPieza = {}, pesoObj = {};
     var total = 0;
     for (var a = 0; a < modelos.length; a++) {
       var mid = modelos[a].modelId;
@@ -49,6 +49,8 @@
         var lote = ids.slice(i, i + 1000);
         var props = await API.viewer.getObjectProperties(mid, lote);
         props.forEach(function (o) {
+          var pw = L.pesoDeObjeto(o, C.propiedadesPeso || []);
+          if (pw) pesoObj[mid + ":" + o.id] = pw;
           var marca = L.marcaDeObjeto(o, C.propiedadesMarca);
           var esAsm = String(o.class || "").toUpperCase().indexOf("ASSEMBLY") >= 0;
           if (!marca) { if (esAsm) asmSin.push({ modelId: mid, id: o.id }); return; }
@@ -85,7 +87,7 @@
     var listaAsm = [];
     Object.keys(asm).forEach(function (m) {
       asm[m].forEach(function (x) {
-        if (x.hijos) (idx[m] = idx[m] || []).push({ modelId: x.modelId, ids: [x.id].concat(x.hijos) });
+        if (x.hijos) (idx[m] = idx[m] || []).push({ modelId: x.modelId, ids: [x.id].concat(x.hijos), asm: true });
         else listaAsm.push({ m: m, x: x });
       });
     });
@@ -99,8 +101,8 @@
       }));
       lote1.forEach(function (it, j) {
         var inst = hijos[j] && hijos[j].length
-          ? { modelId: it.x.modelId, ids: [it.x.id].concat(hijos[j]) }
-          : { modelId: it.x.modelId, id: it.x.id, rec: true };
+          ? { modelId: it.x.modelId, ids: [it.x.id].concat(hijos[j]), asm: true }
+          : { modelId: it.x.modelId, id: it.x.id, rec: true, asm: true };
         (idx[it.m] = idx[it.m] || []).push(inst);
       });
       estado("Agrupando piezas por ensamble… " + Math.min(t + 40, listaAsm.length) + "/" + listaAsm.length);
@@ -125,6 +127,16 @@
       if (s % 20 === 0) estado("Agrupando piezas por ensamble… " + (s + 1) + "/" + soloPartes.length);
       idx[m] = Object.keys(grupos).map(function (g) { return { modelId: grupos[g].modelId, ids: grupos[g].ids }; });
     }
+    // peso de cada pieza física: el del ensamble; si no lo trae, la suma de sus piezas
+    Object.keys(idx).forEach(function (m) {
+      idx[m].forEach(function (inst) {
+        var ids = inst.ids || [inst.id];
+        var w = inst.asm ? (pesoObj[inst.modelId + ":" + ids[0]] || 0) : 0;
+        if (!w) for (var i = (inst.asm ? 1 : 0); i < ids.length; i++) w += pesoObj[inst.modelId + ":" + ids[i]] || 0;
+        if (!w && inst.id) w = pesoObj[inst.modelId + ":" + inst.id] || 0;
+        inst.peso = w;
+      });
+    });
     indice = idx;
     return idx;
   }
@@ -215,11 +227,11 @@
         var s = sumas[m] || C.etapas.map(function () { return 0; });
         var rep = L.repartir(inst.length, s);
         // las primeras piezas reciben la etapa más avanzada
-        var pos = 0;
+        var pos = 0, kg = rep.map(function () { return 0; }), kgTot = 0;
         for (var b = rep.length - 1; b >= 0; b--) {
-          for (var q = 0; q < rep[b]; q++) cubetas[b].push(inst[pos++]);
+          for (var q = 0; q < rep[b]; q++) { var it = inst[pos++]; cubetas[b].push(it); kg[b] += it.peso || 0; kgTot += it.peso || 0; }
         }
-        resumen.push({ marca: m, total: inst.length, rep: rep, reportado: !!sumas[m] });
+        resumen.push({ marca: m, total: inst.length, rep: rep, kg: kg, kgTot: kgTot, reportado: !!sumas[m] });
       });
       estado("Aplicando colores…");
       await API.viewer.setObjectState(undefined, { color: "reset" });
@@ -227,6 +239,14 @@
       for (var c = 0; c < colores.length; c++) {
         if (cubetas[c].length) await API.viewer.setObjectState(selector(cubetas[c]), { color: L.rgba(colores[c], 255) });
       }
+      resumen.sort(function (x, y) {
+        var ax = x.total - x.rep[0], ay = y.total - y.rep[0];
+        if ((ax > 0) !== (ay > 0)) return ax > 0 ? -1 : 1;
+        if (ax > 0) {
+          for (var i = x.rep.length - 1; i >= 1; i--) if (x.rep[i] !== y.rep[i]) return y.rep[i] - x.rep[i];
+        }
+        return x.marca < y.marca ? -1 : 1;
+      });
       var noEnc = Object.keys(sumas).filter(function (m) { return !indice[m]; });
       ultimo = { resumen: resumen, noEnc: noEnc, cubetas: cubetas, colores: colores };
       pintarPanel();
@@ -255,16 +275,35 @@
   }
 
   // ------------------------------------------------------------ panel: leyenda y tabla
+  function ton(kg) { return (kg / 1000).toLocaleString("es-GT", { minimumFractionDigits: 1, maximumFractionDigits: 1 }); }
+
   function pintarLeyenda() {
     var nombres = ["Sin avance"].concat(C.etapas.map(function (e) { return e.nombre; }));
     var colores = [C.colorSinAvance].concat(C.etapas.map(function (e) { return e.color; }));
-    var cuentas = colores.map(function () { return 0; });
-    if (ultimo) ultimo.resumen.forEach(function (r) { r.rep.forEach(function (v, i) { cuentas[i] += v; }); });
-    $("leyenda").innerHTML = nombres.map(function (n, i) {
-      return '<div><span class="sw" style="background:' + colores[i] + '"></span>' + n +
-        '<span class="n">' + (ultimo ? cuentas[i] + " pzas" : "") + "</span></div>";
+    var cuentas = colores.map(function () { return 0; }), kgs = colores.map(function () { return 0; }), kgTot = 0;
+    if (ultimo) ultimo.resumen.forEach(function (r) {
+      r.rep.forEach(function (v, i) { cuentas[i] += v; kgs[i] += r.kg[i]; });
+      kgTot += r.kgTot;
+    });
+    // orden: Armado, Pintura, Despacho, Montaje y al final Sin avance
+    var orden = C.etapas.map(function (e, i) { return i + 1; }).concat([0]);
+    var html = orden.map(function (i) {
+      return '<div><span class="sw" style="background:' + colores[i] + '"></span>' + nombres[i] +
+        '<span class="n">' + (ultimo ? cuentas[i] + " pzas · " + ton(kgs[i]) + " t" : "") + "</span></div>";
     }).join("");
-    $("encTabla").innerHTML = "<th>Marca</th><th class='num'>Pzas</th>" +
+    if (ultimo && kgTot > 0) {
+      // peso que alcanzó cada etapa (lo montado también pasó por armado, etc.)
+      var acum = 0, alc = [];
+      for (var j = C.etapas.length; j >= 1; j--) { acum += kgs[j]; alc[j - 1] = acum; }
+      html += '<div style="margin-top:6px;border-top:1px solid #e5e7eb;padding-top:6px;font-size:12px;flex-wrap:wrap">' +
+        "Total en modelo: <b>" + ton(kgTot) + " t</b></div>" +
+        C.etapas.map(function (e, i) {
+          return '<div style="font-size:12px">' + e.nombre + ": " + ton(alc[i]) + " t (" +
+            (100 * alc[i] / kgTot).toFixed(1) + " %)</div>";
+        }).join("");
+    }
+    $("leyenda").innerHTML = html;
+    $("encTabla").innerHTML = "<th>Marca</th><th class='num'>Pzas</th><th class='num'>t</th>" +
       C.etapas.map(function (e) { return "<th class='num' title='" + e.nombre + "'>" + e.nombre.slice(0, 3) + "</th>"; }).join("") +
       "<th>Avance</th>";
   }
@@ -282,7 +321,8 @@
           return v ? '<span style="width:' + (100 * v / r.total) + '%;background:' + colores[i] + '"></span>' : "";
         });
         barra = barra.slice(1).reverse().concat(barra[0]).join("");
-        return '<tr class="click" data-m="' + r.marca + '"><td>' + r.marca + "</td><td class='num'>" + r.total + "</td>" +
+        return '<tr class="click" data-m="' + r.marca + '"' + (r.total - r.rep[0] > 0 ? "" : ' style="color:#9ca3af"') + '><td>' +
+          r.marca + "</td><td class='num'>" + r.total + "</td><td class='num'>" + (r.kgTot ? ton(r.kgTot) : "") + "</td>" +
           alc.map(function (v) { return "<td class='num'>" + (v || "") + "</td>"; }).join("") +
           '<td><div class="barra">' + barra + "</div></td></tr>";
       }).join("");

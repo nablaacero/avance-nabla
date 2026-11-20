@@ -118,7 +118,36 @@
     return { r: parseInt(h.slice(0, 2), 16), g: parseInt(h.slice(2, 4), 16), b: parseInt(h.slice(4, 6), 16), a: a === undefined ? 255 : a };
   }
 
-  var api = { rgba: rgba, normalizarMarca: normalizarMarca, normalizarEtapa: normalizarEtapa, marcaDeObjeto: marcaDeObjeto,
+  function aNumero(v) {
+    if (typeof v === "number") return v;
+    var m = String(v || "").replace(/\s/g, "").match(/-?\d+(?:[.,]\d+)?/);
+    return m ? parseFloat(m[0].replace(",", ".")) : NaN;
+  }
+
+  // Peso (kg) de un objeto: primero propiedades de la lista, luego "… | 1366.7 kg" en la descripción
+  function pesoDeObjeto(obj, candidatos) {
+    for (var c = 0; c < candidatos.length; c++) {
+      var cand = candidatos[c], p = cand.indexOf(".");
+      var set = cand.slice(0, p), prop = cand.slice(p + 1);
+      var sets = obj.properties || [];
+      for (var s = 0; s < sets.length; s++) {
+        if ((sets[s].name || "").toLowerCase() !== set.toLowerCase()) continue;
+        var props = sets[s].properties || [];
+        for (var k = 0; k < props.length; k++) {
+          if ((props[k].name || "").toLowerCase() === prop.toLowerCase()) {
+            var v = aNumero(props[k].value);
+            if (isFinite(v) && v > 0) return v;
+          }
+        }
+      }
+    }
+    var d = obj.product && obj.product.description;
+    var m = d && String(d).match(/([\d.,]+)\s*kg/i);
+    if (m) { var w = aNumero(m[1]); if (isFinite(w) && w > 0) return w; }
+    return 0;
+  }
+
+  var api = { rgba: rgba, pesoDeObjeto: pesoDeObjeto, normalizarMarca: normalizarMarca, normalizarEtapa: normalizarEtapa, marcaDeObjeto: marcaDeObjeto,
               sumarAvance: sumarAvance, repartir: repartir, leerCSV: leerCSV };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else raiz.Logica = api;
