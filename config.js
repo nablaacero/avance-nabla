@@ -1,0 +1,55 @@
+// =====================================================================
+//  CONFIGURACIÓN - Avance NABLA (extensión de Trimble Connect)
+//  Este es el único archivo que normalmente hay que editar.
+// =====================================================================
+window.CONFIG = {
+  // --- SharePoint (lista donde la app de Power Apps guarda los avances) ---
+  sharepointHost: "gruponablagt.sharepoint.com",
+  sitePath: "/sites/NablaAcero-Produccion",
+  listName: "Avance de produccion",
+
+  // Nombres INTERNOS de las columnas de la lista
+  // (la columna "Marca" internamente se sigue llamando "Title")
+  campos: {
+    marca: "Title",
+    proyecto: "Proyecto",
+    etapa: "Etapa",
+    cantidad: "Cantidad"
+  },
+
+  // --- Microsoft Entra ID (los da TI después de registrar la aplicación) ---
+  // Mientras clientId esté vacío, la extensión solo funciona en modo CSV.
+  clientId: "",
+  tenantId: "36b8dde3-214e-4d8f-bbfd-c54aae7423b4",
+  redirectUri: "https://nablaacero.github.io/avance-nabla/",
+
+  // --- Etapas en orden de avance y su color ---
+  etapas: [
+    { nombre: "Armado",   color: "#F2C500" },   // amarillo
+    { nombre: "Pintura",  color: "#F28C28" },   // naranja
+    { nombre: "Despacho", color: "#2E75D6" },   // azul
+    { nombre: "Montaje",  color: "#2EAA4A" }    // verde
+  ],
+  colorSinAvance: "#BDBDBD",          // marcas del modelo sin ningún reporte
+  atenuarResto: true,                  // objetos sin marca reconocida -> gris transparente
+
+  // --- Dónde buscar la marca del ensamble en las propiedades del modelo ---
+  // Se prueban en este orden. "Product.Name" = nombre del producto IFC.
+  propiedadesMarca: [
+    "Tekla Assembly.Assembly/Cast unit Mark",
+    "Tekla Assembly.ASSEMBLY_POS",
+    "Assembly.ASSEMBLY_POS",
+    "Part Properties.Assembly Mark",
+    "Nabla Aceros.Main Part",
+    "Nabla Aceros.Marca",
+    "Identity Data.Mark",
+    "Product.Name"          // solo en objetos ensamble
+  ],
+
+  // Número de proyecto: se toma de los primeros dígitos del nombre del proyecto
+  // de Trimble Connect (ej. "1256 Amatitlán" -> 1256). Se puede cambiar en el panel.
+  patronProyecto: "^\\s*(\\d{3,5})",
+
+  // Actualización automática mientras el panel está abierto (minutos, 0 = no)
+  autoActualizarMin: 5
+};
