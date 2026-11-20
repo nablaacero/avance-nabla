@@ -36,7 +36,8 @@
         if ((sets[s].name || "").toLowerCase() !== set.toLowerCase()) continue;
         var props = sets[s].properties || [];
         for (var k = 0; k < props.length; k++) {
-          if ((props[k].name || "").toLowerCase() === prop.toLowerCase() && props[k].value !== "" && props[k].value !== null) {
+          if ((props[k].name || "").toLowerCase() === prop.toLowerCase() && props[k].value !== "" && props[k].value !== null &&
+              /[A-Za-z]/.test(String(props[k].value))) {
             return normalizarMarca(props[k].value);
           }
         }
@@ -111,7 +112,13 @@
     });
   }
 
-  var api = { normalizarMarca: normalizarMarca, normalizarEtapa: normalizarEtapa, marcaDeObjeto: marcaDeObjeto,
+  // "#2EAA4A" -> {r,g,b,a} opaco (Trimble Connect conserva la transparencia anterior si se manda solo el hex)
+  function rgba(hex, a) {
+    var h = String(hex).replace("#", "");
+    return { r: parseInt(h.slice(0, 2), 16), g: parseInt(h.slice(2, 4), 16), b: parseInt(h.slice(4, 6), 16), a: a === undefined ? 255 : a };
+  }
+
+  var api = { rgba: rgba, normalizarMarca: normalizarMarca, normalizarEtapa: normalizarEtapa, marcaDeObjeto: marcaDeObjeto,
               sumarAvance: sumarAvance, repartir: repartir, leerCSV: leerCSV };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else raiz.Logica = api;

@@ -225,7 +225,7 @@
       await API.viewer.setObjectState(undefined, { color: "reset" });
       if (C.atenuarResto) await API.viewer.setObjectState(undefined, { color: { r: 225, g: 225, b: 225, a: 70 } });
       for (var c = 0; c < colores.length; c++) {
-        if (cubetas[c].length) await API.viewer.setObjectState(selector(cubetas[c]), { color: colores[c] });
+        if (cubetas[c].length) await API.viewer.setObjectState(selector(cubetas[c]), { color: L.rgba(colores[c], 255) });
       }
       var noEnc = Object.keys(sumas).filter(function (m) { return !indice[m]; });
       ultimo = { resumen: resumen, noEnc: noEnc, cubetas: cubetas, colores: colores };
