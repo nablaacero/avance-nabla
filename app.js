@@ -270,7 +270,7 @@
   async function quitarColores() {
     if (!API) return;
     if (temporizador) clearInterval(temporizador);
-    await API.viewer.setObjectState(undefined, { color: "reset" });
+    await API.viewer.setObjectState(undefined, { color: "reset", visible: "reset" });
     estado("Colores restablecidos.");
   }
 
@@ -288,9 +288,14 @@
     // orden: Armado, Pintura, Despacho, Montaje y al final Sin avance
     var orden = C.etapas.map(function (e, i) { return i + 1; }).concat([0]);
     var html = orden.map(function (i) {
+      var acciones = ultimo && cuentas[i]
+        ? '<span class="acc"><button class="mini" data-sel="' + i + '" title="Seleccionar los ensambles de esta etapa">Seleccionar</button>' +
+          '<button class="mini" data-solo="' + i + '" title="Mostrar solo esta etapa">Solo</button></span>'
+        : '<span class="acc"></span>';
       return '<div><span class="sw" style="background:' + colores[i] + '"></span>' + nombres[i] +
-        '<span class="n">' + (ultimo ? cuentas[i] + " pzas · " + ton(kgs[i]) + " t" : "") + "</span></div>";
+        '<span class="n">' + (ultimo ? cuentas[i] + " pzas · " + ton(kgs[i]) + " t" : "") + "</span>" + acciones + "</div>";
     }).join("");
+    if (ultimo) html += '<div style="margin-top:4px"><button class="mini" id="btnTodo" style="flex:none">Mostrar todo</button></div>';
     if (ultimo && kgTot > 0) {
       // peso que alcanzó cada etapa (lo montado también pasó por armado, etc.)
       var acum = 0, alc = [];
@@ -329,6 +334,28 @@
     $("noEncontradas").innerHTML = ultimo.noEnc.length
       ? '<div class="aviso">Reportadas en SharePoint pero no encontradas en los modelos cargados: ' + ultimo.noEnc.join(", ") + "</div>"
       : "";
+  }
+
+  async function seleccionarEtapa(i, solo) {
+    if (!ultimo || !ultimo.cubetas[i].length) return;
+    var sel = selector(ultimo.cubetas[i]);
+    try {
+      if (solo) {
+        await API.viewer.setObjectState(undefined, { visible: false });
+        await API.viewer.setObjectState(sel, { visible: true });
+      }
+      await API.viewer.setSelection(sel, "set");
+      await API.viewer.setCamera(sel, { animationTime: 400 });
+      var nombre = i === 0 ? "Sin avance" : C.etapas[i - 1].nombre;
+      estado((solo ? "Mostrando solo " : "Seleccionados: ") + nombre + " · " + ultimo.cubetas[i].length + " ensambles.");
+    } catch (e) { estado("No se pudo seleccionar: " + (e.message || e), true); }
+  }
+
+  async function mostrarTodo() {
+    try {
+      await API.viewer.setObjectState(undefined, { visible: "reset" });
+      estado("Se muestran todos los objetos.");
+    } catch (e) {}
   }
 
   async function seleccionarMarca(m) {
@@ -390,6 +417,12 @@
   $("btnReset").addEventListener("click", quitarColores);
   $("btnDiag").addEventListener("click", diagnostico);
   $("filtro").addEventListener("input", pintarPanel);
+  $("leyenda").addEventListener("click", function (ev) {
+    var b = ev.target.closest("button"); if (!b) return;
+    if (b.id === "btnTodo") return mostrarTodo();
+    if (b.dataset.sel !== undefined) return seleccionarEtapa(+b.dataset.sel, false);
+    if (b.dataset.solo !== undefined) return seleccionarEtapa(+b.dataset.solo, true);
+  });
   $("cuerpo").addEventListener("click", function (ev) {
     var tr = ev.target.closest("tr[data-m]"); if (tr) seleccionarMarca(tr.dataset.m);
   });
