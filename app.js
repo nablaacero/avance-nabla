@@ -7,7 +7,7 @@
   var filas = null;           // avance leído
   var ultimo = null;          // resultado del último coloreado
   var temporizador = null, ultimoArchivo = "";
-  var tokTC = null, esperaTok = null, baseTC = null;
+  var tokTC = null, esperaTok = null, baseTC = null, todosIds = [];
   var $ = function (id) { return document.getElementById(id); };
 
   function estado(txt, error) {
@@ -45,6 +45,7 @@
   async function indexar() {
     estado("Leyendo propiedades de los modelos cargados…");
     var modelos = await API.viewer.getObjects();
+    todosIds = modelos.map(function (m) { return { modelId: m.modelId, objectRuntimeIds: (m.objects || []).map(function (o) { return o.id; }) }; });
     var asm = {}, partes = {}, asmSin = [], marcaPieza = {}, pesoObj = {};
     var total = 0;
     for (var a = 0; a < modelos.length; a++) {
@@ -435,8 +436,23 @@
     var sel = selector(ultimo.cubetas[i]);
     try {
       if (solo) {
-        await API.viewer.setObjectState(undefined, { visible: false });
-        await API.viewer.setObjectState(sel, { visible: true });
+        // igual que "Mostrar solo los seleccionados" del visor
+        var ok = false;
+        try {
+          ok = await API.viewer.isolateEntities(sel.modelObjectIds.map(function (g) {
+            return { modelId: g.modelId, entityIds: g.objectRuntimeIds };
+          }));
+        } catch (e) { ok = false; }
+        if (ok === false) {
+          // respaldo: ocultar explícitamente todo lo demás
+          var mostrar = {};
+          sel.modelObjectIds.forEach(function (g) { g.objectRuntimeIds.forEach(function (id) { mostrar[g.modelId + ":" + id] = 1; }); });
+          var ocultar = todosIds.map(function (g) {
+            return { modelId: g.modelId, objectRuntimeIds: g.objectRuntimeIds.filter(function (id) { return !mostrar[g.modelId + ":" + id]; }) };
+          }).filter(function (g) { return g.objectRuntimeIds.length; });
+          if (ocultar.length) await API.viewer.setObjectState({ modelObjectIds: ocultar }, { visible: false });
+          await API.viewer.setObjectState(sel, { visible: true });
+        }
       }
       await API.viewer.setSelection(sel, "set");
       await API.viewer.setCamera(sel, { animationTime: 400 });
@@ -448,6 +464,7 @@
 
   async function mostrarTodo() {
     try {
+      if (todosIds.length) await API.viewer.setObjectState({ modelObjectIds: todosIds }, { visible: true });
       await API.viewer.setObjectState(undefined, { visible: "reset" });
       estado("Se muestran todos los objetos.");
     } catch (e) {}
