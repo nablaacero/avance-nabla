@@ -22,17 +22,29 @@
   button:disabled { opacity:.5; cursor:default; }
   #estado { font-size:12px; color:#374151; min-height:18px; }
   #estado.error { color:#b91c1c; }
-  .leyenda div { display:flex; align-items:center; gap:8px; padding:3px 0; }
   .sw { width:14px; height:14px; border-radius:3px; border:1px solid rgba(0,0,0,.2); flex:none; }
   .leyenda .n { margin-left:auto; font-variant-numeric: tabular-nums; font-weight:600; }
-  .leyenda .acc { display:flex; gap:3px; min-width:104px; justify-content:flex-end; }
-  button.mini { flex:none; padding:2px 6px; font-size:10.5px; font-weight:600; }
+  .tit { font-size:11px; font-weight:700; color:#14325f; text-transform:uppercase; letter-spacing:.03em; margin-bottom:4px; }
+  table.ley td, table.ley th { padding:3px 3px; }
+  table.ley td:first-child { white-space:nowrap; }
+  table.ley .sw { display:inline-block; vertical-align:-2px; margin-right:6px; }
+  table.ley tr.vacia td { color:#9ca3af; }
+  table.ley tr.tot td { font-weight:700; border-top:1px solid #9ca3af; border-bottom:none; }
+  td.accs { white-space:nowrap; text-align:right; width:52px; }
+  button.ico { flex:none; padding:2px 4px; margin-left:2px; line-height:0; border-color:#c7cdd6; }
+  button.ico:hover { background:#eef2f8; border-color:#14325f; }
+  .acum { display:flex; align-items:center; gap:6px; font-size:11.5px; margin:3px 0; }
+  .acum .en { width:58px; }
+  .acum .bar { flex:1; height:8px; background:#e5e7eb; border-radius:2px; overflow:hidden; }
+  .acum .bar span { display:block; height:100%; }
+  .acum .vl { width:150px; text-align:right; font-variant-numeric:tabular-nums; color:#374151; }
+  .nota { font-size:11px; color:#6b7280; margin-top:8px; display:flex; align-items:center; gap:3px; flex-wrap:wrap; }
   table { width:100%; border-collapse:collapse; font-size:12px; }
   th { text-align:left; font-size:11px; color:#6b7280; border-bottom:1px solid var(--borde); padding:4px 3px; position:sticky; top:0; background:#fff; }
-  td { padding:4px 3px; border-bottom:1px solid #eef0f3; font-variant-numeric: tabular-nums; }
+  td { padding:4px 2px; border-bottom:1px solid #eef0f3; font-variant-numeric: tabular-nums; }
   td.num, th.num { text-align:center; }
   tr.click { cursor:pointer; } tr.click:hover { background:var(--gris); }
-  .barra { display:flex; height:8px; border-radius:2px; overflow:hidden; min-width:60px; background:#e5e7eb; }
+  .barra { display:flex; height:8px; border-radius:2px; overflow:hidden; min-width:36px; background:#e5e7eb; }
   .tablaWrap { max-height:340px; overflow:auto; }
   details summary { cursor:pointer; color:var(--azul); font-weight:600; }
   pre { white-space:pre-wrap; font-size:11px; background:var(--gris); padding:6px; border-radius:4px; max-height:240px; overflow:auto; }
@@ -42,7 +54,7 @@
 <body>
 <header>
   <h1>Avance de producción</h1>
-  <small>NABLA Acero · seguimiento por marca · v1.4</small>
+  <small>NABLA Acero · seguimiento por marca · v1.5</small>
 </header>
 
 <section>
@@ -90,8 +102,8 @@
 
 <script src="https://components.connect.trimble.com/trimble-connect-workspace-api/index.js"></script>
 <script src="msal-browser.min.js"></script>
-<script src="config.js?v=1.4"></script>
-<script src="logica.js?v=1.4"></script>
-<script src="app.js?v=1.4"></script>
+<script src="config.js?v=1.5"></script>
+<script src="logica.js?v=1.5"></script>
+<script src="app.js?v=1.5"></script>
 </body>
 </html>

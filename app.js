@@ -277,40 +277,49 @@
   // ------------------------------------------------------------ panel: leyenda y tabla
   function ton(kg) { return (kg / 1000).toLocaleString("es-GT", { minimumFractionDigits: 1, maximumFractionDigits: 1 }); }
 
+  var ICO_SEL = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M4 3l7 17 2.5-7.5L21 10z"/></svg>';
+  var ICO_OJO = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7S1 12 1 12z"/><circle cx="12" cy="12" r="3"/></svg>';
+
   function pintarLeyenda() {
     var nombres = ["Sin avance"].concat(C.etapas.map(function (e) { return e.nombre; }));
     var colores = [C.colorSinAvance].concat(C.etapas.map(function (e) { return e.color; }));
-    var cuentas = colores.map(function () { return 0; }), kgs = colores.map(function () { return 0; }), kgTot = 0;
+    var cuentas = colores.map(function () { return 0; }), kgs = colores.map(function () { return 0; }), kgTot = 0, pzTot = 0;
     if (ultimo) ultimo.resumen.forEach(function (r) {
-      r.rep.forEach(function (v, i) { cuentas[i] += v; kgs[i] += r.kg[i]; });
+      r.rep.forEach(function (v, i) { cuentas[i] += v; kgs[i] += r.kg[i]; pzTot += v; });
       kgTot += r.kgTot;
     });
-    // orden: Armado, Pintura, Despacho, Montaje y al final Sin avance
     var orden = C.etapas.map(function (e, i) { return i + 1; }).concat([0]);
-    var html = orden.map(function (i) {
-      var acciones = ultimo && cuentas[i]
-        ? '<span class="acc"><button class="mini" data-sel="' + i + '" title="Seleccionar los ensambles de esta etapa">Seleccionar</button>' +
-          '<button class="mini" data-solo="' + i + '" title="Mostrar solo esta etapa">Solo</button></span>'
-        : '<span class="acc"></span>';
-      return '<div><span class="sw" style="background:' + colores[i] + '"></span>' + nombres[i] +
-        '<span class="n">' + (ultimo ? cuentas[i] + " pzas · " + ton(kgs[i]) + " t" : "") + "</span>" + acciones + "</div>";
-    }).join("");
-    if (ultimo) html += '<div style="margin-top:4px"><button class="mini" id="btnTodo" style="flex:none">Mostrar todo</button></div>';
+    var pct = function (kg) { return kgTot ? (100 * kg / kgTot).toFixed(1) + "%" : ""; };
+    var html = '<div class="tit">Estado actual de las piezas</div>' +
+      '<table class="ley"><thead><tr><th>Etapa</th><th class="num">Pzas</th><th class="num">Ton</th><th class="num">% peso</th><th></th></tr></thead><tbody>' +
+      orden.map(function (i) {
+        var acc = ultimo && cuentas[i]
+          ? '<button class="ico" data-sel="' + i + '" title="Seleccionar en el modelo las ' + cuentas[i] + ' piezas en ' + nombres[i] + '">' + ICO_SEL + "</button>" +
+            '<button class="ico" data-solo="' + i + '" title="Mostrar solo las piezas en ' + nombres[i] + '">' + ICO_OJO + "</button>"
+          : "";
+        return '<tr' + (ultimo && !cuentas[i] ? ' class="vacia"' : "") + '><td><span class="sw" style="background:' + colores[i] + '"></span>' +
+          nombres[i] + '</td><td class="num">' + (ultimo ? cuentas[i].toLocaleString("es-GT") : "") + '</td><td class="num">' +
+          (ultimo ? ton(kgs[i]) : "") + '</td><td class="num">' + (ultimo ? pct(kgs[i]) : "") + '</td><td class="accs">' + acc + "</td></tr>";
+      }).join("") +
+      (ultimo ? '<tr class="tot"><td>Total en modelo</td><td class="num">' + pzTot.toLocaleString("es-GT") + '</td><td class="num">' + ton(kgTot) +
+        '</td><td class="num">100%</td><td class="accs"><button class="ico" id="btnTodo" title="Volver a mostrar todo el modelo">' + ICO_OJO + "</button></td></tr>" : "") +
+      "</tbody></table>";
     if (ultimo && kgTot > 0) {
-      // peso que alcanzó cada etapa (lo montado también pasó por armado, etc.)
-      var acum = 0, alc = [];
-      for (var j = C.etapas.length; j >= 1; j--) { acum += kgs[j]; alc[j - 1] = acum; }
-      html += '<div style="margin-top:6px;border-top:1px solid #e5e7eb;padding-top:6px;font-size:12px;flex-wrap:wrap">' +
-        "Total en modelo: <b>" + ton(kgTot) + " t</b></div>" +
+      // lo que ya pasó por cada etapa (lo montado también se armó, pintó y despachó)
+      var acum = 0, alc = [], alcPz = [], accPz = 0;
+      for (var j = C.etapas.length; j >= 1; j--) { acum += kgs[j]; accPz += cuentas[j]; alc[j - 1] = acum; alcPz[j - 1] = accPz; }
+      html += '<div class="tit" style="margin-top:10px">Avance acumulado <span style="font-weight:400;color:#6b7280">(lo que ya pasó por cada etapa)</span></div>' +
         C.etapas.map(function (e, i) {
-          return '<div style="font-size:12px">' + e.nombre + ": " + ton(alc[i]) + " t (" +
-            (100 * alc[i] / kgTot).toFixed(1) + " %)</div>";
+          var p = 100 * alc[i] / kgTot;
+          return '<div class="acum"><span class="en">' + e.nombre + '</span><div class="bar"><span style="width:' + p.toFixed(1) + "%;background:" + e.color +
+            '"></span></div><span class="vl">' + p.toFixed(1) + "% · " + ton(alc[i]) + " t · " + alcPz[i] + " pzas</span></div>";
         }).join("");
     }
+    if (ultimo) html += '<div class="nota">' + ICO_SEL + " selecciona en el modelo · " + ICO_OJO + " muestra solo esa etapa</div>";
     $("leyenda").innerHTML = html;
-    $("encTabla").innerHTML = "<th>Marca</th><th class='num'>Pzas</th><th class='num'>t</th>" +
-      C.etapas.map(function (e) { return "<th class='num' title='" + e.nombre + "'>" + e.nombre.slice(0, 3) + "</th>"; }).join("") +
-      "<th>Avance</th>";
+    $("encTabla").innerHTML = "<th>Marca</th><th class='num'>Pzas</th><th class='num'>Ton</th>" +
+      C.etapas.map(function (e) { return "<th class='num' title='Piezas que ya pasaron por " + e.nombre + "'>" + e.nombre.slice(0, 3) + "</th>"; }).join("") +
+      "<th></th>";
   }
 
   function pintarPanel() {
@@ -347,7 +356,8 @@
       await API.viewer.setSelection(sel, "set");
       await API.viewer.setCamera(sel, { animationTime: 400 });
       var nombre = i === 0 ? "Sin avance" : C.etapas[i - 1].nombre;
-      estado((solo ? "Mostrando solo " : "Seleccionados: ") + nombre + " · " + ultimo.cubetas[i].length + " ensambles.");
+      var kg = ultimo.cubetas[i].reduce(function (s, x) { return s + (x.peso || 0); }, 0);
+      estado((solo ? "Mostrando solo " : "Seleccionadas: ") + nombre + " · " + ultimo.cubetas[i].length + " piezas · " + ton(kg) + " t");
     } catch (e) { estado("No se pudo seleccionar: " + (e.message || e), true); }
   }
 
