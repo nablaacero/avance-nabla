@@ -17,6 +17,10 @@ window.CONFIG = {
     cantidad: "Cantidad"
   },
 
+  // --- Archivo de avance dentro del proyecto de Trimble Connect ---
+  // Se toma el archivo más reciente (.xlsx, .xls o .csv) de esta carpeta.
+  carpetaProduccion: "5_FAB/5.3_LISTADOS/5.3.4-PRODUCCION",
+
   // --- Microsoft Entra ID (los da TI después de registrar la aplicación) ---
   // Mientras clientId esté vacío, la extensión solo funciona en modo CSV.
   clientId: "",

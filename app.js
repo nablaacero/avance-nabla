@@ -6,7 +6,8 @@
   var indice = null;          // { marca: [ {modelId, id} ] }  (una entrada por pieza física / ensamble)
   var filas = null;           // avance leído
   var ultimo = null;          // resultado del último coloreado
-  var temporizador = null;
+  var temporizador = null, ultimoArchivo = "";
+  var tokTC = null, esperaTok = null, baseTC = null;
   var $ = function (id) { return document.getElementById(id); };
 
   function estado(txt, error) {
@@ -17,8 +18,12 @@
   // ------------------------------------------------------------ conexión con Trimble Connect
   async function conectar() {
     try {
-      API = await TrimbleConnectWorkspace.connect(window.parent, function (evento) {
+      API = await TrimbleConnectWorkspace.connect(window.parent, function (evento, datos) {
         if (evento === "viewer.onModelStateChanged" || evento === "viewer.onModelReset") indice = null;
+        if (evento === "extension.accessToken") {
+          var t = datos && datos.data !== undefined ? datos.data : datos;
+          if (t && t !== "pending" && t !== "denied") { tokTC = t; if (esperaTok) { esperaTok(t); esperaTok = null; } }
+        }
       }, 30000);
       try {
         var p = await API.project.getProject();
@@ -184,14 +189,92 @@
     return out;
   }
 
+  // ---------- archivo dentro del proyecto de Trimble Connect
+  async function tokenTC() {
+    if (tokTC) return tokTC;
+    var t = await API.extension.requestPermission("accesstoken");
+    if (t && t !== "pending" && t !== "denied") { tokTC = t; return t; }
+    if (t === "denied") throw new Error("Trimble Connect no dio permiso a la extensión. Acepta el acceso e inténtalo de nuevo.");
+    estado("Acepta el permiso que muestra Trimble Connect…");
+    return await new Promise(function (ok, mal) {
+      esperaTok = ok;
+      setTimeout(function () { mal(new Error("Acepta el permiso de acceso de Trimble Connect y vuelve a presionar «Colorear avance».")); }, 90000);
+    });
+  }
+
+  async function tc(ruta, tk) {
+    var r = await fetch(baseTC + ruta, { headers: { Authorization: "Bearer " + tk } });
+    if (r.status === 401) { tokTC = null; throw new Error("La sesión de Trimble Connect venció; vuelve a presionar «Colorear avance»."); }
+    if (!r.ok) throw new Error("Trimble Connect respondió " + r.status + " en " + ruta);
+    return r.json();
+  }
+
+  async function leerTrimble() {
+    estado("Buscando el archivo en " + C.carpetaProduccion + "…");
+    var tk = await tokenTC();
+    var proy = await API.project.getProject();
+    var info = null;
+    if (!baseTC) {
+      var bases = ["https://app.connect.trimble.com", "https://app21.connect.trimble.com", "https://app22.connect.trimble.com",
+                   "https://app31.connect.trimble.com", "https://app32.connect.trimble.com"];
+      for (var b = 0; b < bases.length && !info; b++) {
+        try {
+          var rr = await fetch(bases[b] + "/tc/api/2.0/projects/" + proy.id, { headers: { Authorization: "Bearer " + tk } });
+          if (rr.ok) { info = await rr.json(); baseTC = bases[b] + "/tc/api/2.0"; }
+        } catch (e) {}
+      }
+      if (!info) throw new Error("No pude abrir el proyecto con la API de Trimble Connect.");
+    } else info = await tc("/projects/" + proy.id, tk);
+    var carpeta = info.rootId;
+    var partes = C.carpetaProduccion.split("/").filter(Boolean);
+    for (var i = 0; i < partes.length; i++) {
+      var items = await tc("/folders/" + carpeta + "/items", tk);
+      var f = (items || []).filter(function (x) {
+        return String(x.type).toUpperCase() === "FOLDER" && norm(x.name) === norm(partes[i]);
+      })[0];
+      if (!f) throw new Error("No encontré la carpeta «" + partes[i] + "» en Trimble Connect.");
+      carpeta = f.id;
+    }
+    var arch = (await tc("/folders/" + carpeta + "/items", tk) || []).filter(function (x) {
+      return String(x.type).toUpperCase() === "FILE" && /\.(xlsx|xlsm|xls|csv)$/i.test(x.name || "");
+    });
+    if (!arch.length) throw new Error("La carpeta " + C.carpetaProduccion + " no tiene archivos .xlsx o .csv.");
+    var fecha = function (x) { return Date.parse(x.modifiedOn || x.modified || x.createdOn || 0) || 0; };
+    arch.sort(function (x, y) { return fecha(y) - fecha(x); });
+    var a = arch[0];
+    estado("Leyendo " + a.name + "…");
+    var du = await tc("/files/fs/" + a.id + "/downloadurl", tk);
+    var url = du.url || du.downloadUrl || du;
+    var resp = await fetch(url);
+    if (!resp.ok) throw new Error("No se pudo descargar " + a.name + " (" + resp.status + ").");
+    var buf = await resp.arrayBuffer();
+    var filas = convertir(buf, a.name);
+    ultimoArchivo = a.name + " · " + new Date(fecha(a)).toLocaleString("es-GT", { dateStyle: "short", timeStyle: "short" });
+    return filas;
+  }
+
+  function norm(t) { return String(t || "").trim().toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, ""); }
+
+  // contenido (ArrayBuffer) de un .csv o .xlsx -> filas de avance
+  function convertir(buf, nombre) {
+    if (/\.csv$/i.test(nombre)) return L.leerCSV(new TextDecoder("utf-8").decode(buf));
+    var wb = XLSX.read(new Uint8Array(buf), { type: "array" });
+    var error = null;
+    for (var s = 0; s < wb.SheetNames.length; s++) {
+      var m = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[s]], { header: 1, raw: true, defval: "" });
+      try { return L.leerTabla(m); } catch (e) { error = e; }
+    }
+    throw error || new Error("El archivo no tiene hojas.");
+  }
+
   function leerArchivo() {
     return new Promise(function (ok, mal) {
       var fi = $("archivo").files[0];
       if (!fi) return mal(new Error("Elige el archivo CSV exportado de la lista."));
       var rd = new FileReader();
-      rd.onload = function () { try { ok(L.leerCSV(rd.result)); } catch (e) { mal(e); } };
+      rd.onload = function () { try { ultimoArchivo = fi.name; ok(convertir(rd.result, fi.name)); } catch (e) { mal(e); } };
       rd.onerror = function () { mal(new Error("No se pudo leer el archivo.")); };
-      rd.readAsText(fi, "utf-8");
+      rd.readAsArrayBuffer(fi);
     });
   }
 
@@ -217,7 +300,8 @@
         estado("No encontré marcas en los modelos cargados. Revisa en «Diagnóstico» en qué propiedad está la marca.", true);
         return;
       }
-      filas = $("fuente").value === "sp" ? await leerSharePoint() : await leerArchivo();
+      var fu = $("fuente").value;
+      filas = fu === "sp" ? await leerSharePoint() : fu === "tc" ? await leerTrimble() : await leerArchivo();
       var sumas = L.sumarAvance(filas, proyecto, C.etapas);
       var colores = [C.colorSinAvance].concat(C.etapas.map(function (e) { return e.color; }));
       var cubetas = colores.map(function () { return []; });
@@ -251,7 +335,8 @@
       ultimo = { resumen: resumen, noEnc: noEnc, cubetas: cubetas, colores: colores };
       pintarPanel();
       var hora = new Date().toLocaleTimeString("es-GT", { hour: "2-digit", minute: "2-digit" });
-      estado("Actualizado " + hora + " · " + resumen.length + " marcas en el modelo · " + filas.length + " reportes leídos.");
+      estado("Actualizado " + hora + " · " + resumen.length + " marcas en el modelo · " + filas.length + " registros leídos" +
+        (fu !== "sp" && ultimoArchivo ? " · archivo: " + ultimoArchivo : ""));
       programarAuto();
     } catch (e) {
       estado(e.message || String(e), true);
@@ -262,7 +347,7 @@
 
   function programarAuto() {
     if (temporizador) clearInterval(temporizador);
-    if ($("fuente").value === "sp" && C.autoActualizarMin > 0) {
+    if ($("fuente").value !== "csv" && C.autoActualizarMin > 0) {
       temporizador = setInterval(function () { colorear(true); }, C.autoActualizarMin * 60000);
     }
   }
@@ -421,7 +506,7 @@
     $("cajaCSV").style.display = this.value === "csv" ? "block" : "none";
     guardarLocal("fuente", this.value);
   });
-  var f0 = leerLocal("fuente") || (C.clientId ? "sp" : "csv");
+  var f0 = leerLocal("fuente") || (C.clientId ? "sp" : "tc");
   $("fuente").value = f0; $("cajaCSV").style.display = f0 === "csv" ? "block" : "none";
   $("btnColorear").addEventListener("click", function () { colorear(false); });
   $("btnReset").addEventListener("click", quitarColores);

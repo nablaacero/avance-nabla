@@ -75,9 +75,9 @@
     return out;
   }
 
-  // Lector de CSV exportado de SharePoint (separador , o ;, comillas)
-  function leerCSV(texto) {
-    texto = texto.replace(/^﻿/, "");
+  // CSV -> matriz de celdas (separador , o ;, comillas)
+  function tokenizarCSV(texto) {
+    texto = String(texto).replace(/^\uFEFF/, "");
     var primera = texto.split(/\r?\n/)[0] || "";
     var sep = (primera.split(";").length > primera.split(",").length) ? ";" : ",";
     var filas = [], fila = [], campo = "", comillas = false;
@@ -91,26 +91,77 @@
       else if (ch === sep) { fila.push(campo); campo = ""; }
       else if (ch === "\n" || ch === "\r") {
         if (ch === "\r" && texto[i + 1] === "\n") i++;
-        fila.push(campo); campo = "";
-        if (fila.some(function (x) { return x.trim() !== ""; })) filas.push(fila);
-        fila = [];
+        fila.push(campo); campo = ""; filas.push(fila); fila = [];
       } else campo += ch;
     }
-    if (campo !== "" || fila.length) { fila.push(campo); if (fila.some(function (x) { return x.trim() !== ""; })) filas.push(fila); }
-    if (!filas.length) return [];
-    var enc = filas[0].map(function (h) {
-      return h.trim().toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "");
-    });
-    function col(nombres) {
-      for (var a = 0; a < nombres.length; a++) { var k = enc.indexOf(nombres[a]); if (k >= 0) return k; }
-      return -1;
-    }
-    var cM = col(["marca", "titulo", "title"]), cP = col(["proyecto"]), cE = col(["etapa"]), cQ = col(["cantidad"]);
-    if (cM < 0 || cE < 0 || cQ < 0) throw new Error("El CSV debe tener columnas Marca, Etapa y Cantidad (y Proyecto).");
-    return filas.slice(1).map(function (r) {
-      return { marca: r[cM], proyecto: cP >= 0 ? r[cP] : "", etapa: r[cE], cantidad: r[cQ] };
-    });
+    if (campo !== "" || fila.length) { fila.push(campo); filas.push(fila); }
+    return filas;
   }
+
+  function norm(h) {
+    return String(h === undefined || h === null ? "" : h).trim().toLowerCase()
+      .normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/\s+/g, " ");
+  }
+
+  // Columnas que representan una etapa en un listado "por columnas" (ej. Enviadas = Despacho)
+  var SINONIMOS = [
+    { etapa: "Armado",   re: /^(armad|armado)/ },
+    { etapa: "Pintura",  re: /^(pintad|pintura)/ },
+    { etapa: "Despacho", re: /^(enviad|despach)/ },
+    { etapa: "Montaje",  re: /^(montad|montaje)/ }
+  ];
+
+  // Matriz (CSV o Excel) -> [{marca, proyecto, etapa, cantidad}]
+  // Acepta: (A) exportación de la lista (Marca, Proyecto, Etapa, Cantidad)
+  //         (B) listado por columnas: Orden Pieza / Marca + columnas Enviadas, Montadas, etc.
+  function leerTabla(m) {
+    var limite = Math.min(m.length, 25);
+    for (var r = 0; r < limite; r++) {
+      var enc = (m[r] || []).map(norm);
+      var col = function (nombres) {
+        for (var a = 0; a < nombres.length; a++) { var k = enc.indexOf(nombres[a]); if (k >= 0) return k; }
+        return -1;
+      };
+      var cM = col(["marca", "titulo", "title", "orden pieza", "ensamble", "marca ensamble", "assembly mark"]);
+      if (cM < 0) continue;
+      var cP = col(["proyecto", "codigo", "project"]);
+      var cE = col(["etapa"]), cQ = col(["cantidad"]);
+      var datos = m.slice(r + 1).filter(function (f) {
+        var v = norm(f && f[cM]); return v && v !== "totales" && v !== "total";
+      });
+      var limpiar = function (marca, proy) {
+        var t = String(marca).trim();
+        var p = String(proy || "").trim();
+        if (p && t.indexOf(p + "-") === 0) t = t.slice(p.length + 1);
+        else { var mm = t.match(/^(\d{3,5})-(.+)$/); if (mm) { t = mm[2]; if (!p) p = mm[1]; } }
+        return { marca: t, proyecto: p };
+      };
+      if (cE >= 0 && cQ >= 0) {
+        return datos.map(function (f) {
+          var x = limpiar(f[cM], cP >= 0 ? f[cP] : "");
+          return { marca: x.marca, proyecto: x.proyecto, etapa: f[cE], cantidad: f[cQ] };
+        });
+      }
+      var colsEtapa = [];
+      enc.forEach(function (h, i) {
+        if (!h || /peso|pendiente|kg|ton/.test(h)) return;
+        SINONIMOS.forEach(function (s) { if (s.re.test(h)) colsEtapa.push({ i: i, etapa: s.etapa }); });
+      });
+      if (!colsEtapa.length) continue;
+      var out = [];
+      datos.forEach(function (f) {
+        var x = limpiar(f[cM], cP >= 0 ? f[cP] : "");
+        colsEtapa.forEach(function (c) {
+          var q = Number(String(f[c.i] === undefined || f[c.i] === null ? "" : f[c.i]).replace(",", "."));
+          if (q > 0) out.push({ marca: x.marca, proyecto: x.proyecto, etapa: c.etapa, cantidad: q });
+        });
+      });
+      return out;
+    }
+    throw new Error("No reconozco el formato: necesito columnas Marca/Etapa/Cantidad, o una columna de marca (ej. «Orden Pieza») con columnas Enviadas, Montadas, etc.");
+  }
+
+  function leerCSV(texto) { return leerTabla(tokenizarCSV(texto)); }
 
   // "#2EAA4A" -> {r,g,b,a} opaco (Trimble Connect conserva la transparencia anterior si se manda solo el hex)
   function rgba(hex, a) {
@@ -148,7 +199,7 @@
   }
 
   var api = { rgba: rgba, pesoDeObjeto: pesoDeObjeto, normalizarMarca: normalizarMarca, normalizarEtapa: normalizarEtapa, marcaDeObjeto: marcaDeObjeto,
-              sumarAvance: sumarAvance, repartir: repartir, leerCSV: leerCSV };
+              sumarAvance: sumarAvance, repartir: repartir, leerCSV: leerCSV, leerTabla: leerTabla, tokenizarCSV: tokenizarCSV };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else raiz.Logica = api;
 })(this);

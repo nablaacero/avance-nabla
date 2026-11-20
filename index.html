@@ -54,7 +54,7 @@
 <body>
 <header>
   <h1>Avance de producción</h1>
-  <small>NABLA Acero · seguimiento por marca · v1.5</small>
+  <small>NABLA Acero · seguimiento por marca · v1.6</small>
 </header>
 
 <section>
@@ -62,12 +62,13 @@
   <input type="text" id="proyecto" placeholder="ej. 1256">
   <label for="fuente">Origen del avance</label>
   <select id="fuente">
+    <option value="tc">Archivo en Trimble Connect (5.3.4-PRODUCCION)</option>
     <option value="sp">Lista de SharePoint (en línea)</option>
-    <option value="csv">Archivo CSV exportado de la lista</option>
+    <option value="csv">Archivo de mi computadora (CSV o Excel)</option>
   </select>
   <div id="cajaCSV" style="display:none">
-    <label for="archivo">Archivo CSV</label>
-    <input type="file" id="archivo" accept=".csv,text/csv">
+    <label for="archivo">Archivo (CSV o Excel)</label>
+    <input type="file" id="archivo" accept=".csv,.xlsx,.xlsm,.xls">
   </div>
   <div class="fila">
     <button class="prim" id="btnColorear">Colorear avance</button>
@@ -102,8 +103,9 @@
 
 <script src="https://components.connect.trimble.com/trimble-connect-workspace-api/index.js"></script>
 <script src="msal-browser.min.js"></script>
-<script src="config.js?v=1.5"></script>
-<script src="logica.js?v=1.5"></script>
-<script src="app.js?v=1.5"></script>
+<script src="xlsx.full.min.js"></script>
+<script src="config.js?v=1.6"></script>
+<script src="logica.js?v=1.6"></script>
+<script src="app.js?v=1.6"></script>
 </body>
 </html>
