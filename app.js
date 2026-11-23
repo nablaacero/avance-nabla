@@ -6,7 +6,7 @@
   var indice = null;          // { marca: [ {modelId, id} ] }  (una entrada por pieza física / ensamble)
   var filas = null;           // avance leído
   var ultimo = null;          // resultado del último coloreado
-  var temporizador = null, ultimoArchivo = "";
+  var temporizador = null, ultimoArchivo = "", fechaAvance = null;
   var tokTC = null, esperaTok = null, baseTC = null, todosIds = [];
   var $ = function (id) { return document.getElementById(id); };
 
@@ -210,8 +210,8 @@
     var sitio = await r.json();
     var f = C.campos;
     var url = "https://graph.microsoft.com/v1.0/sites/" + sitio.id + "/lists/" + encodeURIComponent(C.listName) +
-      "/items?$top=999&$expand=fields($select=" + [f.marca, f.proyecto, f.etapa, f.cantidad].join(",") + ")";
-    var out = [];
+      "/items?$top=999&$expand=fields($select=" + [f.marca, f.proyecto, f.etapa, f.cantidad, "Created"].join(",") + ")";
+    var out = [], maxF = 0;
     while (url) {
       var rr = await fetch(url, { headers: h });
       if (!rr.ok) throw new Error("No se pudo leer la lista (" + rr.status + ").");
@@ -219,9 +219,12 @@
       (j.value || []).forEach(function (it) {
         var x = it.fields || {};
         out.push({ marca: x[f.marca], proyecto: x[f.proyecto], etapa: x[f.etapa], cantidad: x[f.cantidad] });
+        var tf = Date.parse(x.Created || it.createdDateTime || 0); if (tf > maxF) maxF = tf;
       });
       url = j["@odata.nextLink"];
     }
+    ultimoArchivo = "lista de SharePoint (último reporte)";
+    fechaAvance = maxF ? new Date(maxF) : null;
     return out;
   }
 
@@ -285,7 +288,8 @@
     if (!resp.ok) throw new Error("No se pudo descargar " + a.name + " (" + resp.status + ").");
     var buf = await resp.arrayBuffer();
     var filas = convertir(buf, a.name);
-    ultimoArchivo = a.name + " · " + new Date(fecha(a)).toLocaleString("es-GT", { dateStyle: "short", timeStyle: "short" });
+    ultimoArchivo = a.name;
+    fechaAvance = fecha(a) ? new Date(fecha(a)) : null;
     return filas;
   }
 
@@ -308,7 +312,10 @@
       var fi = $("archivo").files[0];
       if (!fi) return mal(new Error("Elige el archivo CSV exportado de la lista."));
       var rd = new FileReader();
-      rd.onload = function () { try { ultimoArchivo = fi.name; ok(convertir(rd.result, fi.name)); } catch (e) { mal(e); } };
+      rd.onload = function () {
+        try { ultimoArchivo = fi.name; fechaAvance = fi.lastModified ? new Date(fi.lastModified) : null; ok(convertir(rd.result, fi.name)); }
+        catch (e) { mal(e); }
+      };
       rd.onerror = function () { mal(new Error("No se pudo leer el archivo.")); };
       rd.readAsArrayBuffer(fi);
     });
@@ -324,6 +331,9 @@
     });
     return { modelObjectIds: Object.keys(porModelo).map(function (k) { return porModelo[k]; }) };
   }
+
+  function prefijo(m) { var x = String(m).match(/([A-Z]+)\d+[A-Z]?$/); return x ? x[1] : ""; }
+  function oculta(m) { return $("ocultarCT").checked && (C.prefijosOcultables || []).indexOf(prefijo(m)) >= 0; }
 
   // Orden en que se asigna el avance dentro de una misma marca (lo más avanzado va primero).
   // Se agrupa cada 0.5 m en el eje principal para que piezas alineadas se ordenen por el secundario.
@@ -358,8 +368,9 @@
       var sumas = L.sumarAvance(filas, proyecto, C.etapas);
       var colores = [C.colorSinAvance].concat(C.etapas.map(function (e) { return e.color; }));
       var cubetas = colores.map(function () { return []; });
-      var resumen = [];
+      var resumen = [], ocultas = [];
       Object.keys(indice).sort().forEach(function (m) {
+        if (oculta(m)) { Array.prototype.push.apply(ocultas, indice[m]); return; }
         var inst = indice[m].slice().sort(comparadorOrden($("orden").value));
         var s = sumas[m] || C.etapas.map(function () { return 0; });
         var rep = L.repartir(inst.length, s);
@@ -371,7 +382,7 @@
         resumen.push({ marca: m, total: inst.length, rep: rep, kg: kg, kgTot: kgTot, reportado: !!sumas[m] });
       });
       estado("Aplicando colores…");
-      await API.viewer.setObjectState(undefined, { color: "reset" });
+      await API.viewer.setObjectState(undefined, { color: "reset", visible: "reset" });
       if (C.atenuarResto) await API.viewer.setObjectState(undefined, { color: { r: 225, g: 225, b: 225, a: 70 } });
       for (var c = 0; c < colores.length; c++) {
         if (cubetas[c].length) await API.viewer.setObjectState(selector(cubetas[c]), { color: L.rgba(colores[c], 255) });
@@ -384,12 +395,17 @@
         }
         return x.marca < y.marca ? -1 : 1;
       });
-      var noEnc = Object.keys(sumas).filter(function (m) { return !indice[m]; });
-      ultimo = { resumen: resumen, noEnc: noEnc, cubetas: cubetas, colores: colores };
+      if (ocultas.length) await API.viewer.setObjectState(selector(ocultas), { visible: false });
+      var noEnc = Object.keys(sumas).filter(function (m) { return !indice[m] && !oculta(m); });
+      ultimo = { resumen: resumen, noEnc: noEnc, cubetas: cubetas, colores: colores, ocultas: ocultas };
       pintarPanel();
       var hora = new Date().toLocaleTimeString("es-GT", { hour: "2-digit", minute: "2-digit" });
-      estado("Actualizado " + hora + " · " + resumen.length + " marcas en el modelo · " + filas.length + " registros leídos" +
-        (fu !== "sp" && ultimoArchivo ? " · archivo: " + ultimoArchivo : ""));
+      $("fechaAvance").innerHTML = fechaAvance
+        ? "Avance al <b>" + fechaAvance.toLocaleString("es-GT", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" }) +
+          "</b><br><span>" + (fu === "sp" ? "fecha del " : "fecha del archivo ") + ultimoArchivo + "</span>"
+        : (ultimoArchivo ? "Archivo: " + ultimoArchivo : "");
+      estado("Leído a las " + hora + " · " + resumen.length + " marcas en el modelo" +
+        (ocultas.length ? " (sin " + (C.prefijosOcultables || []).join(", ") + ")" : "") + " · " + filas.length + " registros.");
       programarAuto();
     } catch (e) {
       estado(e.message || String(e), true);
@@ -518,7 +534,8 @@
     try {
       if (todosIds.length) await API.viewer.setObjectState({ modelObjectIds: todosIds }, { visible: true });
       await API.viewer.setObjectState(undefined, { visible: "reset" });
-      estado("Se muestran todos los objetos.");
+      if (ultimo && ultimo.ocultas && ultimo.ocultas.length) await API.viewer.setObjectState(selector(ultimo.ocultas), { visible: false });
+      estado("Se muestran todos los objetos" + (ultimo && ultimo.ocultas && ultimo.ocultas.length ? " (sin costaneras)." : "."));
     } catch (e) {}
   }
 
@@ -579,6 +596,8 @@
   $("fuente").value = f0; $("cajaCSV").style.display = f0 === "csv" ? "block" : "none";
   $("btnColorear").addEventListener("click", function () { colorear(false); });
   $("orden").addEventListener("change", function () { if (ultimo) colorear(false); });
+  $("ocultarCT").checked = leerLocal("ocultarCT") === "1";
+  $("ocultarCT").addEventListener("change", function () { guardarLocal("ocultarCT", this.checked ? "1" : "0"); if (ultimo) colorear(false); });
   $("btnReset").addEventListener("click", quitarColores);
   $("btnDiag").addEventListener("click", diagnostico);
   $("filtro").addEventListener("input", pintarPanel);

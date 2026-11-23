@@ -64,6 +64,10 @@ window.CONFIG = {
   // de Trimble Connect (ej. "1256 Amatitlán" -> 1256). Se puede cambiar en el panel.
   patronProyecto: "^\\s*(\\d{3,5})",
 
+  // Prefijos de marca que se pueden ocultar con la casilla "Ocultar costaneras"
+  // (se toma la parte en letras antes del número final: CT8001 -> CT, AL-2CF5 -> CF)
+  prefijosOcultables: ["CT", "CF"],
+
   // Actualización automática mientras el panel está abierto (minutos, 0 = no)
   autoActualizarMin: 5
 };
