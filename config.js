@@ -66,8 +66,8 @@ window.CONFIG = {
 
   // Prefijos de marca que se ocultan con la casilla "Ocultar secundarios"
   // (se toma la parte en letras antes del número final: CT8001 -> CT, AL-2CF5 -> CF)
-  // CT/CF costaneras · BC bracones · GT canal pluvial · RB tensores
-  prefijosOcultables: ["CT", "CF", "BC", "GT", "RB"],
+  // CT/CF costaneras · BC bracones · GT canal pluvial · TS tensores
+  prefijosOcultables: ["CT", "CF", "BC", "GT", "TS"],
   // true = la misma casilla también oculta tornillos, tuercas y arandelas
   ocultarTornillos: true,
 

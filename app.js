@@ -335,7 +335,22 @@
   }
 
   function prefijo(m) { var x = String(m).match(/([A-Z]+)\d+[A-Z]?$/); return x ? x[1] : ""; }
-  function oculta(m) { return $("ocultarCT").checked && (C.prefijosOcultables || []).indexOf(prefijo(m)) >= 0; }
+  // filtro de secundarios: "todo" | "sin" (ocultarlos) | "solo" (ver solo ellos)
+  function modoSec() { return $("filtroSec").value; }
+  function esSec(m) { return (C.prefijosOcultables || []).indexOf(prefijo(m)) >= 0; }
+  function oculta(m) { var f = modoSec(); return f === "sin" ? esSec(m) : f === "solo" ? !esSec(m) : false; }
+  async function aplicarFiltro() {
+    if (!ultimo) return;
+    if (ultimo.modo === "solo") {
+      if (todosIds.length) await API.viewer.setObjectState({ modelObjectIds: todosIds }, { visible: false });
+      if (ultimo.visibles.length) await API.viewer.setObjectState(selector(ultimo.visibles), { visible: true });
+    }
+    if (ultimo.ocultas.length) await API.viewer.setObjectState(selector(ultimo.ocultas), { visible: false });
+  }
+  function textoFiltro() {
+    return ultimo && ultimo.modo === "sin" ? " (sin " + textoOcultables() + ")"
+      : ultimo && ultimo.modo === "solo" ? " (solo " + (C.prefijosOcultables || []).join(", ") + ")" : "";
+  }
   // tornillos: clase IFC de fijación, o accesorio cuyo nombre/descripción indique perno
   function esTornillo(o) {
     var cl = String(o.class || "").toUpperCase();
@@ -383,10 +398,11 @@
       var sumas = L.sumarAvance(filas, proyecto, C.etapas);
       var colores = [C.colorSinAvance].concat(C.etapas.map(function (e) { return e.color; }));
       var cubetas = colores.map(function () { return []; });
-      var resumen = [], ocultas = [];
-      if ($("ocultarCT").checked && C.ocultarTornillos !== false) Array.prototype.push.apply(ocultas, tornillos);
+      var resumen = [], ocultas = [], visibles = [], modo = modoSec();
+      if (modo !== "todo" && C.ocultarTornillos !== false) Array.prototype.push.apply(ocultas, tornillos);
       Object.keys(indice).sort().forEach(function (m) {
-        if (oculta(m)) { Array.prototype.push.apply(ocultas, indice[m]); return; }
+        if (oculta(m)) { if (modo === "sin") Array.prototype.push.apply(ocultas, indice[m]); return; }
+        if (modo === "solo") Array.prototype.push.apply(visibles, indice[m]);
         var inst = indice[m].slice().sort(comparadorOrden($("orden").value));
         var s = sumas[m] || C.etapas.map(function () { return 0; });
         var rep = L.repartir(inst.length, s);
@@ -411,9 +427,9 @@
         }
         return x.marca < y.marca ? -1 : 1;
       });
-      if (ocultas.length) await API.viewer.setObjectState(selector(ocultas), { visible: false });
       var noEnc = Object.keys(sumas).filter(function (m) { return !indice[m] && !oculta(m); });
-      ultimo = { resumen: resumen, noEnc: noEnc, cubetas: cubetas, colores: colores, ocultas: ocultas };
+      ultimo = { resumen: resumen, noEnc: noEnc, cubetas: cubetas, colores: colores, ocultas: ocultas, visibles: visibles, modo: modo };
+      await aplicarFiltro();
       pintarPanel();
       var hora = new Date().toLocaleTimeString("es-GT", { hour: "2-digit", minute: "2-digit" });
       $("fechaAvance").innerHTML = fechaAvance
@@ -421,7 +437,7 @@
           "</b><br><span>" + (fu === "sp" ? "fecha del " : "fecha del archivo ") + ultimoArchivo + "</span>"
         : (ultimoArchivo ? "Archivo: " + ultimoArchivo : "");
       estado("Leído a las " + hora + " · " + resumen.length + " marcas en el modelo" +
-        (ocultas.length ? " (sin " + textoOcultables() + ")" : "") + " · " + filas.length + " registros.");
+        textoFiltro() + " · " + filas.length + " registros.");
       programarAuto();
     } catch (e) {
       estado(e.message || String(e), true);
@@ -538,7 +554,7 @@
           await API.viewer.setObjectState(sel, { visible: true });
         }
       }
-      if (solo && ultimo.ocultas && ultimo.ocultas.length) await API.viewer.setObjectState(selector(ultimo.ocultas), { visible: false });
+      if (solo && ultimo.ocultas.length) await API.viewer.setObjectState(selector(ultimo.ocultas), { visible: false });
       await API.viewer.setSelection(sel, "set");
       await API.viewer.setCamera(sel, { animationTime: 400 });
       var nombre = i === 0 ? "Sin avance" : C.etapas[i - 1].nombre;
@@ -551,8 +567,8 @@
     try {
       if (todosIds.length) await API.viewer.setObjectState({ modelObjectIds: todosIds }, { visible: true });
       await API.viewer.setObjectState(undefined, { visible: "reset" });
-      if (ultimo && ultimo.ocultas && ultimo.ocultas.length) await API.viewer.setObjectState(selector(ultimo.ocultas), { visible: false });
-      estado("Se muestran todos los objetos" + (ultimo && ultimo.ocultas && ultimo.ocultas.length ? " (sin " + textoOcultables() + ")." : "."));
+      await aplicarFiltro();
+      estado("Se muestran todos los objetos" + textoFiltro() + ".");
     } catch (e) {}
   }
 
@@ -613,9 +629,11 @@
   $("fuente").value = f0; $("cajaCSV").style.display = f0 === "csv" ? "block" : "none";
   $("btnColorear").addEventListener("click", function () { colorear(false); });
   $("orden").addEventListener("change", function () { if (ultimo) colorear(false); });
-  $("txtOcultar").textContent = "Ocultar secundarios (" + textoOcultables() + ")";
-  $("ocultarCT").checked = leerLocal("ocultarCT") === "1";
-  $("ocultarCT").addEventListener("change", function () { guardarLocal("ocultarCT", this.checked ? "1" : "0"); if (ultimo) colorear(false); });
+  $("filtroSec").options[1].text = "Sin secundarios (" + textoOcultables() + ")";
+  $("filtroSec").options[2].text = "Solo secundarios (" + (C.prefijosOcultables || []).join(", ") + ")";
+  var fGuard = leerLocal("filtroSec") || (leerLocal("ocultarCT") === "1" ? "sin" : "todo");
+  $("filtroSec").value = /^(todo|sin|solo)$/.test(fGuard) ? fGuard : "todo";
+  $("filtroSec").addEventListener("change", function () { guardarLocal("filtroSec", this.value); if (ultimo) colorear(false); });
   $("btnReset").addEventListener("click", quitarColores);
   $("btnDiag").addEventListener("click", diagnostico);
   $("filtro").addEventListener("input", pintarPanel);
