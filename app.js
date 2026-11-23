@@ -425,7 +425,7 @@
     if (ultimo.ocultas.length) await API.viewer.setObjectState(selector(ultimo.ocultas), { visible: false });
   }
   function textoFiltro() {
-    return ultimo && ultimo.modo === "sin" ? " (sin " + textoOcultables() + ")"
+    return ultimo && ultimo.modo === "sin" ? " (est. principal, sin " + textoOcultables() + ")"
       : ultimo && ultimo.modo === "solo" ? " (solo " + (C.prefijosOcultables || []).join(", ") + ")" : "";
   }
   // tornillos: clase IFC de fijación, o accesorio cuyo nombre/descripción indique perno
