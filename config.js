@@ -68,6 +68,10 @@ window.CONFIG = {
   // (se toma la parte en letras antes del número final: CT8001 -> CT, AL-2CF5 -> CF)
   // CT/CF costaneras · BC bracones · GT canal pluvial · TS tensores
   prefijosOcultables: ["CT", "CF", "BC", "GT", "TS"],
+  // Grupos del proyecto de Trimble Connect que NO pueden usar la extensión
+  // (mismo nombre que en Equipo → Grupos; no importan mayúsculas ni tildes)
+  gruposBloqueados: ["EXTERNO"],
+
   // true = la misma casilla también oculta tornillos, tuercas y arandelas
   ocultarTornillos: true,
 

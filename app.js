@@ -12,9 +12,9 @@
   var $ = function (id) { return document.getElementById(id); };
 
   function estado(txt, error) {
-    var e = $("estado"); e.textContent = txt || ""; e.className = error ? "error" : "";
+    var e = $("estado"); if (!e) return; e.textContent = txt || ""; e.className = error ? "error" : "";
   }
-  function ocupado(si) { $("btnColorear").disabled = si; $("btnReset").disabled = si; }
+  function ocupado(si) { if (!$("btnColorear")) return; $("btnColorear").disabled = si; $("btnReset").disabled = si; }
 
   // ------------------------------------------------------------ conexión con Trimble Connect
   async function conectar() {
@@ -36,6 +36,7 @@
         if (ord) $("orden").value = ord;
       } catch (e) { /* sin proyecto */ }
       estado("Listo. Carga los modelos y presiona «Colorear avance».");
+      if ((C.gruposBloqueados || []).length) verificarAcceso().catch(function () {});
     } catch (e) {
       estado("No se pudo conectar con Trimble Connect. Abre esta página desde el visor 3D.", true);
     }
@@ -250,6 +251,68 @@
     return r.json();
   }
 
+  // encuentra la región del proyecto (una sola vez) y devuelve los datos del proyecto
+  async function asegurarBase(tk, pid) {
+    if (baseTC) return await tc("/projects/" + pid, tk);
+    var info = null;
+    var bases = ["https://app.connect.trimble.com", "https://app21.connect.trimble.com", "https://app22.connect.trimble.com",
+                 "https://app31.connect.trimble.com", "https://app32.connect.trimble.com"];
+    for (var b = 0; b < bases.length && !info; b++) {
+      try {
+        var rr = await fetch(bases[b] + "/tc/api/2.0/projects/" + pid, { headers: { Authorization: "Bearer " + tk } });
+        if (rr.ok) { info = await rr.json(); baseTC = bases[b] + "/tc/api/2.0"; }
+      } catch (e) {}
+    }
+    if (!info) throw new Error("No pude abrir el proyecto con la API de Trimble Connect.");
+    return info;
+  }
+
+  // ---------- control de acceso por grupo del proyecto (ej. EXTERNO)
+  var acceso = null, diagAcceso = "";
+  function lista(x) { return Array.isArray(x) ? x : (x && (x.items || x.data || x.users || x.members)) || []; }
+  async function intentar(tk, rutas) {
+    for (var i = 0; i < rutas.length; i++) {
+      try {
+        var r = await fetch(baseTC + rutas[i], { headers: { Authorization: "Bearer " + tk } });
+        if (r.ok) { diagAcceso += "\n  OK " + rutas[i]; return await r.json(); }
+        diagAcceso += "\n  " + r.status + " " + rutas[i];
+      } catch (e) { diagAcceso += "\n  error " + rutas[i]; }
+    }
+    return null;
+  }
+  async function verificarAcceso() {
+    var bloq = (C.gruposBloqueados || []).map(norm);
+    if (!bloq.length || acceso === true) return;
+    if (acceso === false) throw new Error("Sin acceso");
+    diagAcceso = "Control de acceso (grupos bloqueados: " + C.gruposBloqueados.join(", ") + ")";
+    var tk = await tokenTC();
+    var proy = await API.project.getProject();
+    await asegurarBase(tk, proy.id);
+    var yo = await intentar(tk, ["/users/me"]);
+    var grupos = lista(await intentar(tk, ["/groups?projectId=" + proy.id, "/projects/" + proy.id + "/groups"]));
+    if (!yo || !grupos.length) { diagAcceso += "\n  → no se pudo verificar; se permite el acceso"; acceso = true; return; }
+    var miIds = [yo.id, yo.tiduuid, yo.uuid].filter(Boolean), miMail = String(yo.email || "").toLowerCase();
+    var esMiembro = function (u) {
+      return miIds.indexOf(u.id) >= 0 || miIds.indexOf(u.tiduuid) >= 0 || miIds.indexOf(u.userId) >= 0 ||
+        (miMail && String(u.email || "").toLowerCase() === miMail);
+    };
+    acceso = true;
+    for (var g = 0; g < grupos.length && acceso; g++) {
+      if (bloq.indexOf(norm(grupos[g].name)) < 0) continue;
+      var miembros = lista(grupos[g].users || grupos[g].members);
+      if (!miembros.length) miembros = lista(await intentar(tk, ["/groups/" + grupos[g].id + "/users", "/groups/" + grupos[g].id + "/members"]));
+      diagAcceso += "\n  grupo " + grupos[g].name + ": " + miembros.length + " miembros";
+      if (miembros.some(esMiembro)) acceso = false;
+    }
+    diagAcceso += "\n  → " + (acceso ? "acceso permitido" : "acceso BLOQUEADO");
+    if (!acceso) {
+      document.body.innerHTML = '<div style="font-family:Segoe UI,Arial,sans-serif;padding:24px;color:#14325f">' +
+        '<h3 style="margin:0 0 8px">Avance de producción</h3>' +
+        '<p style="font-size:13px;color:#4b5563">Esta herramienta es de uso interno de NABLA Acero y no está disponible para tu usuario.</p></div>';
+      throw new Error("Sin acceso");
+    }
+  }
+
   async function leerTrimble() {
     estado("Buscando el archivo en " + C.carpetaProduccion + "…");
     var tk = await tokenTC();
@@ -385,6 +448,7 @@
     if (!API) return;
     ocupado(true);
     try {
+      await verificarAcceso();
       var proyecto = $("proyecto").value.trim();
       guardarLocal("proyecto:" + $("proyecto").dataset.pid, proyecto);
       guardarLocal("orden:" + $("proyecto").dataset.pid, $("orden").value);
@@ -616,7 +680,7 @@
           });
         }
       } catch (e) {}
-      out.textContent = txt;
+      out.textContent = txt + (diagAcceso ? "\n\n" + diagAcceso : "");
     } catch (e) { out.textContent = "Error: " + (e.message || e); }
   }
 
