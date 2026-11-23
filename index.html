@@ -54,7 +54,7 @@
 <body>
 <header>
   <h1>Avance de producción</h1>
-  <small>NABLA Acero · seguimiento por marca · v1.7</small>
+  <small>NABLA Acero · seguimiento por marca · v1.8</small>
 </header>
 
 <section>
@@ -65,6 +65,14 @@
     <option value="tc">Archivo en Trimble Connect (5.3.4-PRODUCCION)</option>
     <option value="sp">Lista de SharePoint (en línea)</option>
     <option value="csv">Archivo de mi computadora (CSV o Excel)</option>
+  </select>
+  <label for="orden">Orden de avance dentro de cada marca</label>
+  <select id="orden">
+    <option value="xy">X creciente, luego Y creciente</option>
+    <option value="yx">Y creciente, luego X creciente</option>
+    <option value="xy_">X decreciente, luego Y decreciente</option>
+    <option value="yx_">Y decreciente, luego X decreciente</option>
+    <option value="z">De abajo hacia arriba (Z), luego X</option>
   </select>
   <div id="cajaCSV" style="display:none">
     <label for="archivo">Archivo (CSV o Excel)</label>
@@ -104,8 +112,8 @@
 <script src="https://components.connect.trimble.com/trimble-connect-workspace-api/index.js"></script>
 <script src="msal-browser.min.js"></script>
 <script src="xlsx.full.min.js"></script>
-<script src="config.js?v=1.7"></script>
-<script src="logica.js?v=1.7"></script>
-<script src="app.js?v=1.7"></script>
+<script src="config.js?v=1.8"></script>
+<script src="logica.js?v=1.8"></script>
+<script src="app.js?v=1.8"></script>
 </body>
 </html>

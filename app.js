@@ -31,6 +31,8 @@
         var guardado = leerLocal("proyecto:" + (p && p.id));
         $("proyecto").value = guardado || (m ? m[1] : "");
         $("proyecto").dataset.pid = p && p.id || "";
+        var ord = leerLocal("orden:" + (p && p.id));
+        if (ord) $("orden").value = ord;
       } catch (e) { /* sin proyecto */ }
       estado("Listo. Carga los modelos y presiona «Colorear avance».");
     } catch (e) {
@@ -143,6 +145,39 @@
         inst.peso = w;
       });
     });
+    // posición (centro de la caja envolvente) de cada pieza física, para ordenar el avance por dirección
+    try {
+      var porModelo = {};
+      Object.keys(idx).forEach(function (m) {
+        idx[m].forEach(function (inst) {
+          (porModelo[inst.modelId] = porModelo[inst.modelId] || []).push.apply(porModelo[inst.modelId], inst.ids || [inst.id]);
+        });
+      });
+      var centro = {};
+      var mods = Object.keys(porModelo);
+      for (var mm = 0; mm < mods.length; mm++) {
+        var lista = porModelo[mods[mm]];
+        for (var b = 0; b < lista.length; b += 1000) {
+          var cajas = await API.viewer.getObjectBoundingBoxes(mods[mm], lista.slice(b, b + 1000));
+          (cajas || []).forEach(function (c) {
+            var bx = c.boundingBox;
+            if (!bx || !bx.min || !bx.max || !isFinite(bx.min.x) || !isFinite(bx.max.x)) return;
+            centro[mods[mm] + ":" + c.id] = [(bx.min.x + bx.max.x) / 2, (bx.min.y + bx.max.y) / 2, (bx.min.z + bx.max.z) / 2];
+          });
+          estado("Leyendo posiciones… " + Math.min(b + 1000, lista.length) + "/" + lista.length);
+        }
+      }
+      Object.keys(idx).forEach(function (m) {
+        idx[m].forEach(function (inst) {
+          var s = [0, 0, 0], n = 0;
+          (inst.ids || [inst.id]).forEach(function (id) {
+            var c = centro[inst.modelId + ":" + id];
+            if (c) { s[0] += c[0]; s[1] += c[1]; s[2] += c[2]; n++; }
+          });
+          inst.c = n ? [s[0] / n, s[1] / n, s[2] / n] : null;
+        });
+      });
+    } catch (e) { /* sin posiciones: se usa el orden interno */ }
     indice = idx;
     return idx;
   }
@@ -290,12 +325,29 @@
     return { modelObjectIds: Object.keys(porModelo).map(function (k) { return porModelo[k]; }) };
   }
 
+  // Orden en que se asigna el avance dentro de una misma marca (lo más avanzado va primero).
+  // Se agrupa cada 0.5 m en el eje principal para que piezas alineadas se ordenen por el secundario.
+  function comparadorOrden(modo) {
+    var ejes = { xy: [[0, 1], [1, 1]], yx: [[1, 1], [0, 1]], xy_: [[0, -1], [1, -1]], yx_: [[1, -1], [0, -1]], z: [[2, 1], [0, 1]] }[modo] || [[0, 1], [1, 1]];
+    var paso = 0.5;
+    return function (a, b) {
+      if (a.c && b.c) {
+        var p = ejes[0], s = ejes[1];
+        var da = Math.round(a.c[p[0]] / paso), db = Math.round(b.c[p[0]] / paso);
+        if (da !== db) return (da - db) * p[1];
+        if (Math.abs(a.c[s[0]] - b.c[s[0]]) > 1e-3) return (a.c[s[0]] - b.c[s[0]]) * s[1];
+      } else if (a.c || b.c) return a.c ? -1 : 1;
+      return (a.id || a.ids[0]) - (b.id || b.ids[0]);
+    };
+  }
+
   async function colorear(soloReleer) {
     if (!API) return;
     ocupado(true);
     try {
       var proyecto = $("proyecto").value.trim();
       guardarLocal("proyecto:" + $("proyecto").dataset.pid, proyecto);
+      guardarLocal("orden:" + $("proyecto").dataset.pid, $("orden").value);
       if (!indice) await indexar();
       if (!Object.keys(indice).length) {
         estado("No encontré marcas en los modelos cargados. Revisa en «Diagnóstico» en qué propiedad está la marca.", true);
@@ -308,7 +360,7 @@
       var cubetas = colores.map(function () { return []; });
       var resumen = [];
       Object.keys(indice).sort().forEach(function (m) {
-        var inst = indice[m].slice().sort(function (a, b) { return (a.id || a.ids[0]) - (b.id || b.ids[0]); });
+        var inst = indice[m].slice().sort(comparadorOrden($("orden").value));
         var s = sumas[m] || C.etapas.map(function () { return 0; });
         var rep = L.repartir(inst.length, s);
         // las primeras piezas reciben la etapa más avanzada
@@ -526,6 +578,7 @@
   var f0 = leerLocal("fuente") || (C.clientId ? "sp" : "tc");
   $("fuente").value = f0; $("cajaCSV").style.display = f0 === "csv" ? "block" : "none";
   $("btnColorear").addEventListener("click", function () { colorear(false); });
+  $("orden").addEventListener("change", function () { if (ultimo) colorear(false); });
   $("btnReset").addEventListener("click", quitarColores);
   $("btnDiag").addEventListener("click", diagnostico);
   $("filtro").addEventListener("input", pintarPanel);
