@@ -58,7 +58,7 @@
 <body>
 <header>
   <h1>Avance de producción</h1>
-  <small>NABLA Acero · seguimiento por marca · v1.10</small>
+  <small>NABLA Acero · seguimiento por marca · v1.11</small>
 </header>
 
 <section>
@@ -78,7 +78,7 @@
     <option value="yx_">Y decreciente, luego X decreciente</option>
     <option value="z">De abajo hacia arriba (Z), luego X</option>
   </select>
-  <label class="chk"><input type="checkbox" id="ocultarCT"> Ocultar costaneras (CT, CF)</label>
+  <label class="chk"><input type="checkbox" id="ocultarCT"> <span id="txtOcultar">Ocultar secundarios</span></label>
   <div id="cajaCSV" style="display:none">
     <label for="archivo">Archivo (CSV o Excel)</label>
     <input type="file" id="archivo" accept=".csv,.xlsx,.xlsm,.xls">
@@ -118,8 +118,8 @@
 <script src="https://components.connect.trimble.com/trimble-connect-workspace-api/index.js"></script>
 <script src="msal-browser.min.js"></script>
 <script src="xlsx.full.min.js"></script>
-<script src="config.js?v=1.10"></script>
-<script src="logica.js?v=1.10"></script>
-<script src="app.js?v=1.10"></script>
+<script src="config.js?v=1.11"></script>
+<script src="logica.js?v=1.11"></script>
+<script src="app.js?v=1.11"></script>
 </body>
 </html>

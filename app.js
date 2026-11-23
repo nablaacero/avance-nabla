@@ -3,6 +3,7 @@
   "use strict";
   var C = window.CONFIG, L = window.Logica;
   var API = null;
+  var tornillos = [];         // pernos / tuercas / arandelas del modelo
   var indice = null;          // { marca: [ {modelId, id} ] }  (una entrada por pieza física / ensamble)
   var filas = null;           // avance leído
   var ultimo = null;          // resultado del último coloreado
@@ -49,7 +50,7 @@
     var modelos = await API.viewer.getObjects();
     todosIds = modelos.map(function (m) { return { modelId: m.modelId, objectRuntimeIds: (m.objects || []).map(function (o) { return o.id; }) }; });
     var asm = {}, partes = {}, asmSin = [], marcaPieza = {}, pesoObj = {};
-    var total = 0;
+    var total = 0; tornillos = [];
     for (var a = 0; a < modelos.length; a++) {
       var mid = modelos[a].modelId;
       var ids = (modelos[a].objects || []).map(function (o) { return o.id; });
@@ -57,6 +58,7 @@
         var lote = ids.slice(i, i + 1000);
         var props = await API.viewer.getObjectProperties(mid, lote);
         props.forEach(function (o) {
+          if (esTornillo(o)) { tornillos.push({ modelId: mid, id: o.id }); return; }
           var pw = L.pesoDeObjeto(o, C.propiedadesPeso || []);
           if (pw) pesoObj[mid + ":" + o.id] = pw;
           var marca = L.marcaDeObjeto(o, C.propiedadesMarca);
@@ -334,6 +336,19 @@
 
   function prefijo(m) { var x = String(m).match(/([A-Z]+)\d+[A-Z]?$/); return x ? x[1] : ""; }
   function oculta(m) { return $("ocultarCT").checked && (C.prefijosOcultables || []).indexOf(prefijo(m)) >= 0; }
+  // tornillos: clase IFC de fijación, o accesorio cuyo nombre/descripción indique perno
+  function esTornillo(o) {
+    var cl = String(o.class || "").toUpperCase();
+    if (/FASTENER/.test(cl)) return true;
+    if (!/ACCESSORY|PROXY/.test(cl)) return false;
+    var t = ((o.product && (o.product.name + " " + (o.product.description || ""))) || "") + " " + (o.name || "");
+    return /\b(bolt|perno|tornillo|tuerca|arandela|nut|washer|anchor)/i.test(t);
+  }
+  function textoOcultables() {
+    var p = (C.prefijosOcultables || []).slice();
+    if (C.ocultarTornillos !== false) p.push("tornillos");
+    return p.join(", ");
+  }
 
   // Orden en que se asigna el avance dentro de una misma marca (lo más avanzado va primero).
   // Se agrupa cada 0.5 m en el eje principal para que piezas alineadas se ordenen por el secundario.
@@ -369,6 +384,7 @@
       var colores = [C.colorSinAvance].concat(C.etapas.map(function (e) { return e.color; }));
       var cubetas = colores.map(function () { return []; });
       var resumen = [], ocultas = [];
+      if ($("ocultarCT").checked && C.ocultarTornillos !== false) Array.prototype.push.apply(ocultas, tornillos);
       Object.keys(indice).sort().forEach(function (m) {
         if (oculta(m)) { Array.prototype.push.apply(ocultas, indice[m]); return; }
         var inst = indice[m].slice().sort(comparadorOrden($("orden").value));
@@ -405,7 +421,7 @@
           "</b><br><span>" + (fu === "sp" ? "fecha del " : "fecha del archivo ") + ultimoArchivo + "</span>"
         : (ultimoArchivo ? "Archivo: " + ultimoArchivo : "");
       estado("Leído a las " + hora + " · " + resumen.length + " marcas en el modelo" +
-        (ocultas.length ? " (sin " + (C.prefijosOcultables || []).join(", ") + ")" : "") + " · " + filas.length + " registros.");
+        (ocultas.length ? " (sin " + textoOcultables() + ")" : "") + " · " + filas.length + " registros.");
       programarAuto();
     } catch (e) {
       estado(e.message || String(e), true);
@@ -522,6 +538,7 @@
           await API.viewer.setObjectState(sel, { visible: true });
         }
       }
+      if (solo && ultimo.ocultas && ultimo.ocultas.length) await API.viewer.setObjectState(selector(ultimo.ocultas), { visible: false });
       await API.viewer.setSelection(sel, "set");
       await API.viewer.setCamera(sel, { animationTime: 400 });
       var nombre = i === 0 ? "Sin avance" : C.etapas[i - 1].nombre;
@@ -535,7 +552,7 @@
       if (todosIds.length) await API.viewer.setObjectState({ modelObjectIds: todosIds }, { visible: true });
       await API.viewer.setObjectState(undefined, { visible: "reset" });
       if (ultimo && ultimo.ocultas && ultimo.ocultas.length) await API.viewer.setObjectState(selector(ultimo.ocultas), { visible: false });
-      estado("Se muestran todos los objetos" + (ultimo && ultimo.ocultas && ultimo.ocultas.length ? " (sin costaneras)." : "."));
+      estado("Se muestran todos los objetos" + (ultimo && ultimo.ocultas && ultimo.ocultas.length ? " (sin " + textoOcultables() + ")." : "."));
     } catch (e) {}
   }
 
@@ -596,6 +613,7 @@
   $("fuente").value = f0; $("cajaCSV").style.display = f0 === "csv" ? "block" : "none";
   $("btnColorear").addEventListener("click", function () { colorear(false); });
   $("orden").addEventListener("change", function () { if (ultimo) colorear(false); });
+  $("txtOcultar").textContent = "Ocultar secundarios (" + textoOcultables() + ")";
   $("ocultarCT").checked = leerLocal("ocultarCT") === "1";
   $("ocultarCT").addEventListener("change", function () { guardarLocal("ocultarCT", this.checked ? "1" : "0"); if (ultimo) colorear(false); });
   $("btnReset").addEventListener("click", quitarColores);
