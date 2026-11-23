@@ -285,9 +285,9 @@
     if (!bloq.length || acceso === true) return;
     if (acceso === false) throw new Error("Sin acceso");
     diagAcceso = "Control de acceso (grupos bloqueados: " + C.gruposBloqueados.join(", ") + ")";
-    var tk = await tokenTC();
-    var proy = await API.project.getProject();
-    await asegurarBase(tk, proy.id);
+    var tk, proy;
+    try { tk = await tokenTC(); proy = await API.project.getProject(); await asegurarBase(tk, proy.id); }
+    catch (e) { diagAcceso += "\n  → no se pudo verificar (" + (e.message || e) + "); se permite el acceso"; acceso = true; return; }
     var yo = await intentar(tk, ["/users/me"]);
     var grupos = lista(await intentar(tk, ["/groups?projectId=" + proy.id, "/projects/" + proy.id + "/groups"]));
     if (!yo || !grupos.length) { diagAcceso += "\n  → no se pudo verificar; se permite el acceso"; acceso = true; return; }
@@ -404,9 +404,23 @@
   function oculta(m) { var f = modoSec(); return f === "sin" ? esSec(m) : f === "solo" ? !esSec(m) : false; }
   async function aplicarFiltro() {
     if (!ultimo) return;
-    if (ultimo.modo === "solo") {
-      if (todosIds.length) await API.viewer.setObjectState({ modelObjectIds: todosIds }, { visible: false });
-      if (ultimo.visibles.length) await API.viewer.setObjectState(selector(ultimo.visibles), { visible: true });
+    if (ultimo.modo === "solo" && ultimo.visibles.length) {
+      // igual que "Mostrar solo los seleccionados" del visor
+      var sel = selector(ultimo.visibles), ok = false;
+      try {
+        ok = await API.viewer.isolateEntities(sel.modelObjectIds.map(function (g) {
+          return { modelId: g.modelId, entityIds: g.objectRuntimeIds };
+        }));
+      } catch (e) { ok = false; }
+      if (ok === false) {
+        // respaldo: ocultar explícitamente todo lo que no es secundario
+        var ver = {};
+        sel.modelObjectIds.forEach(function (g) { g.objectRuntimeIds.forEach(function (id) { ver[g.modelId + ":" + id] = 1; }); });
+        var ocultar = todosIds.map(function (g) {
+          return { modelId: g.modelId, objectRuntimeIds: g.objectRuntimeIds.filter(function (id) { return !ver[g.modelId + ":" + id]; }) };
+        }).filter(function (g) { return g.objectRuntimeIds.length; });
+        if (ocultar.length) await API.viewer.setObjectState({ modelObjectIds: ocultar }, { visible: false });
+      }
     }
     if (ultimo.ocultas.length) await API.viewer.setObjectState(selector(ultimo.ocultas), { visible: false });
   }
@@ -693,11 +707,18 @@
   $("fuente").value = f0; $("cajaCSV").style.display = f0 === "csv" ? "block" : "none";
   $("btnColorear").addEventListener("click", function () { colorear(false); });
   $("orden").addEventListener("change", function () { if (ultimo) colorear(false); });
-  $("filtroSec").options[1].text = "Sin secundarios (" + textoOcultables() + ")";
-  $("filtroSec").options[2].text = "Solo secundarios (" + (C.prefijosOcultables || []).join(", ") + ")";
+  // botones Todas / Sin secundarios / Solo secundarios
+  $("txtSec").textContent = "Secundarios: " + textoOcultables();
+  function marcarFiltro(v) {
+    $("filtroSec").value = v;
+    Array.prototype.forEach.call(document.querySelectorAll("#grupoSec button"), function (b) { b.classList.toggle("act", b.dataset.f === v); });
+  }
   var fGuard = leerLocal("filtroSec") || (leerLocal("ocultarCT") === "1" ? "sin" : "todo");
-  $("filtroSec").value = /^(todo|sin|solo)$/.test(fGuard) ? fGuard : "todo";
-  $("filtroSec").addEventListener("change", function () { guardarLocal("filtroSec", this.value); if (ultimo) colorear(false); });
+  marcarFiltro(/^(todo|sin|solo)$/.test(fGuard) ? fGuard : "todo");
+  $("grupoSec").addEventListener("click", function (ev) {
+    var b = ev.target.closest("button"); if (!b || b.dataset.f === $("filtroSec").value) return;
+    marcarFiltro(b.dataset.f); guardarLocal("filtroSec", b.dataset.f); if (ultimo) colorear(false);
+  });
   $("btnReset").addEventListener("click", quitarColores);
   $("btnDiag").addEventListener("click", diagnostico);
   $("filtro").addEventListener("input", pintarPanel);
