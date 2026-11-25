@@ -9,6 +9,8 @@
   var ultimo = null;          // resultado del último coloreado
   var temporizador = null, ultimoArchivo = "", fechaAvance = null;
   var tokTC = null, esperaTok = null, baseTC = null, todosIds = [];
+  var datosEnv = null, envSel = null, envSelUltimo = true;   // envíos leídos y envío resaltado
+  var COLOR_ENV_SEL = "#E8622C";
   var $ = function (id) { return document.getElementById(id); };
 
   function estado(txt, error) {
@@ -474,6 +476,13 @@
       var fu = $("fuente").value;
       filas = fu === "sp" ? await leerSharePoint() : fu === "tc" ? await leerTrimble() : await leerArchivo();
       var sumas = L.sumarAvance(filas, proyecto, C.etapas);
+      datosEnv = L.sumarEnvios(filas, proyecto);
+      var envios = datosEnv.envios, nE = envios.length;
+      if (nE && (envSelUltimo || envios.indexOf(envSel) < 0)) { envSel = envios[nE - 1]; envSelUltimo = true; }
+      var porEnvio = $("modoColor").value === "envio";
+      if (porEnvio && !nE) { porEnvio = false; estado("El archivo no trae números de envío; se colorea por etapa.", true); }
+      var envCub = [[]].concat(envios.map(function () { return []; }));
+      var envRes = [];
       var colores = [C.colorSinAvance].concat(C.etapas.map(function (e) { return e.color; }));
       var cubetas = colores.map(function () { return []; });
       var resumen = [], ocultas = [], visibles = [], modo = modoSec();
@@ -490,14 +499,35 @@
           for (var q = 0; q < rep[b]; q++) { var it = inst[pos++]; cubetas[b].push(it); kg[b] += it.peso || 0; kgTot += it.peso || 0; }
         }
         resumen.push({ marca: m, total: inst.length, rep: rep, kg: kg, kgTot: kgTot, reportado: !!sumas[m] });
+        // por envío: en orden correlativo, el envío más antiguo toma las primeras piezas del orden elegido
+        var lst = datosEnv.porMarca[m] || [], p2 = 0, repE = envCub.map(function () { return 0; }), kgE = repE.slice(), envM = [];
+        lst.forEach(function (x) {
+          var k = envios.indexOf(x.envio) + 1;
+          for (var q = 0; q < x.q && p2 < inst.length; q++) { var it2 = inst[p2++]; envCub[k].push(it2); repE[k]++; kgE[k] += it2.peso || 0; }
+          envM.push(x.envio);
+        });
+        for (; p2 < inst.length; p2++) { envCub[0].push(inst[p2]); repE[0]++; kgE[0] += inst[p2].peso || 0; }
+        envRes.push({ marca: m, total: inst.length, rep: repE, kg: kgE, kgTot: kgTot, envios: envM,
+                      ultimo: envM.length ? envM[envM.length - 1] : "", reportado: lst.length > 0 });
       });
+      var nombres = ["Sin avance"].concat(C.etapas.map(function (e) { return e.nombre; }));
+      if (porEnvio) {
+        cubetas = envCub;
+        colores = [C.colorSinAvance].concat(envios.map(function (e, k) { return e === envSel ? COLOR_ENV_SEL : L.colorEnvio(k, nE); }));
+        nombres = ["Sin envío"].concat(envios.map(function (e) { return "Envío " + e; }));
+      }
       estado("Aplicando colores…");
       await API.viewer.setObjectState(undefined, { color: "reset", visible: "reset" });
       if (C.atenuarResto) await API.viewer.setObjectState(undefined, { color: { r: 225, g: 225, b: 225, a: 70 } });
       for (var c = 0; c < colores.length; c++) {
         if (cubetas[c].length) await API.viewer.setObjectState(selector(cubetas[c]), { color: L.rgba(colores[c], 255) });
       }
-      resumen.sort(function (x, y) {
+      if (porEnvio) resumen = envRes.slice().sort(function (x, y) {
+        if (!!x.ultimo !== !!y.ultimo) return x.ultimo ? -1 : 1;
+        if (x.ultimo !== y.ultimo) return Number(y.ultimo) - Number(x.ultimo);
+        return x.marca < y.marca ? -1 : 1;
+      });
+      else resumen.sort(function (x, y) {
         var ax = x.total - x.rep[0], ay = y.total - y.rep[0];
         if ((ax > 0) !== (ay > 0)) return ax > 0 ? -1 : 1;
         if (ax > 0) {
@@ -506,7 +536,9 @@
         return x.marca < y.marca ? -1 : 1;
       });
       var noEnc = Object.keys(sumas).filter(function (m) { return !indice[m] && !oculta(m); });
-      ultimo = { resumen: resumen, noEnc: noEnc, cubetas: cubetas, colores: colores, ocultas: ocultas, visibles: visibles, modo: modo };
+      if (porEnvio) noEnc = Object.keys(datosEnv.porMarca).filter(function (m) { return !indice[m] && !oculta(m); });
+      ultimo = { resumen: resumen, noEnc: noEnc, cubetas: cubetas, colores: colores, ocultas: ocultas, visibles: visibles, modo: modo,
+                 porEnvio: porEnvio, nombres: nombres, env: { envios: envios, cubetas: envCub } };
       await aplicarFiltro();
       pintarPanel();
       var hora = new Date().toLocaleTimeString("es-GT", { hour: "2-digit", minute: "2-digit" });
@@ -544,7 +576,97 @@
   var ICO_SEL = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M4 3l7 17 2.5-7.5L21 10z"/></svg>';
   var ICO_OJO = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7S1 12 1 12z"/><circle cx="12" cy="12" r="3"/></svg>';
 
+  function pintarLeyendaEnvio() {
+    var u = ultimo, n = u.cubetas.length, cuentas = [], kgs = [], kgTot = 0, pzTot = 0;
+    for (var i = 0; i < n; i++) {
+      cuentas[i] = u.cubetas[i].length;
+      kgs[i] = u.cubetas[i].reduce(function (a, x) { return a + (x.peso || 0); }, 0);
+      kgTot += kgs[i]; pzTot += cuentas[i];
+    }
+    var pct = function (kg) { return kgTot ? (100 * kg / kgTot).toFixed(1) + "%" : ""; };
+    var fila = function (i) {
+      var acc = cuentas[i]
+        ? '<button class="ico" data-sel="' + i + '" title="Seleccionar en el modelo">' + ICO_SEL + "</button>" +
+          '<button class="ico" data-solo="' + i + '" title="Mostrar solo estas piezas">' + ICO_OJO + "</button>" : "";
+      var esSel = i > 0 && u.env.envios[i - 1] === envSel;
+      return '<tr' + (!cuentas[i] ? ' class="vacia"' : "") + (esSel ? ' style="font-weight:700"' : "") +
+        '><td><span class="sw" style="background:' + u.colores[i] + '"></span>' + u.nombres[i] +
+        (i > 0 ? ' <span style="color:#9ca3af;font-weight:400">#' + i + "</span>" : "") + '</td><td class="num">' + cuentas[i] +
+        '</td><td class="num">' + ton(kgs[i]) + '</td><td class="num">' + pct(kgs[i]) + '</td><td class="accs">' + acc + "</td></tr>";
+    };
+    var orden = []; for (var j = n - 1; j >= 1; j--) orden.push(j); orden.push(0);
+    var desp = kgTot - kgs[0], despPz = pzTot - cuentas[0];
+    var html = '<div class="tit">Envíos (del más reciente al más antiguo)</div>' +
+      '<div class="acum"><span class="en">Enviado</span><div class="bar"><span style="width:' + (kgTot ? (100 * desp / kgTot).toFixed(1) : 0) +
+      '%;background:#2E75D6"></span></div><span class="vl">' + pct(desp) + " · " + ton(desp) + " t · " + despPz + " pzas</span></div>" +
+      '<div class="scrollLey"><table class="ley"><thead><tr><th>Envío</th><th class="num">Pzas</th><th class="num">Ton</th><th class="num">% peso</th><th></th></tr></thead><tbody>' +
+      orden.map(fila).join("") +
+      '<tr class="tot"><td>Total en modelo</td><td class="num">' + pzTot + '</td><td class="num">' + ton(kgTot) +
+      '</td><td class="num">100%</td><td class="accs"><button class="ico" id="btnTodo" title="Volver a mostrar todo el modelo">' + ICO_OJO + "</button></td></tr>" +
+      "</tbody></table></div>" +
+      '<div class="nota">Más claro = envío más antiguo · más oscuro = más reciente · <span class="sw" style="display:inline-block;background:' + COLOR_ENV_SEL +
+      '"></span> envío resaltado · gris = sin enviar</div>';
+    $("leyenda").innerHTML = html;
+    $("encTabla").innerHTML = "<th>Marca</th><th class='num'>Pzas</th><th class='num'>Ton</th><th class='num' title='Piezas enviadas'>Env</th>" +
+      "<th class='num'>Últ. envío</th><th></th>";
+  }
+
+  // ------------------------------------------------------------ cuadro del envío seleccionado (último por defecto)
+  function pintarCardEnvio() {
+    var sec = $("secEnvio");
+    if (!datosEnv || !datosEnv.envios.length) { sec.style.display = "none"; return; }
+    sec.style.display = "";
+    var envs = datosEnv.envios, k = envs.indexOf(envSel), esUlt = k === envs.length - 1;
+    $("selEnvio").innerHTML = envs.slice().reverse().map(function (e, i) {
+      return '<option value="' + e + '"' + (e === envSel ? " selected" : "") + ">Envío " + e + (i === 0 ? " (último)" : "") + "</option>";
+    }).join("");
+    $("titEnvio").textContent = esUlt ? "Último envío" : "Envío seleccionado";
+    $("numEnvio").innerHTML = envSel + "<span>n.º " + (k + 1) + " de " + envs.length + "</span>";
+    // marcas del envío: peso del listado de producción (Peso Uni) o, si no viene, del modelo
+    var lineas = [], pz = 0, kg = 0;
+    Object.keys(datosEnv.porMarca).forEach(function (m) {
+      datosEnv.porMarca[m].forEach(function (x) {
+        if (x.envio !== envSel) return;
+        var enModelo = !!(indice && indice[m]);
+        var pu = datosEnv.pesoUni[m] || (enModelo ? (indice[m].reduce(function (a, it) { return a + (it.peso || 0); }, 0) / indice[m].length) : 0);
+        lineas.push({ marca: m, q: x.q, kg: pu * x.q, enModelo: enModelo });
+        pz += x.q; kg += pu * x.q;
+      });
+    });
+    lineas.sort(function (a, b) { return b.kg - a.kg || (a.marca < b.marca ? -1 : 1); });
+    var acumKg = 0;
+    envs.slice(0, k + 1).forEach(function (e) {
+      Object.keys(datosEnv.porMarca).forEach(function (m) {
+        datosEnv.porMarca[m].forEach(function (x) { if (x.envio === e) acumKg += (datosEnv.pesoUni[m] || 0) * x.q; });
+      });
+    });
+    $("kpisEnvio").innerHTML = "<div><b>" + lineas.length + "</b><span>marcas</span></div><div><b>" + pz.toLocaleString("es-GT") +
+      "</b><span>piezas</span></div><div><b>" + ton(kg) + "</b><span>toneladas</span></div>" +
+      (acumKg ? "<div><b>" + ton(acumKg) + "</b><span>t acumuladas</span></div>" : "");
+    $("cuerpoEnvio").innerHTML = lineas.map(function (l) {
+      return '<tr class="click" data-m="' + l.marca + '"><td' + (l.enModelo ? "" : ' class="fuera" title="No está en el modelo cargado"') + ">" + l.marca +
+        (l.enModelo ? "" : " (no en modelo)") + '</td><td class="num">' + l.q + '</td><td class="num">' + (l.kg ? ton(l.kg) : "") + "</td></tr>";
+    }).join("");
+    var hay = ultimo && ultimo.env && (ultimo.env.cubetas[k + 1] || []).length;
+    $("btnSelEnv").disabled = $("btnSoloEnv").disabled = !hay;
+  }
+
+  async function cambiarEnvioSel(e) {
+    envSel = e; envSelUltimo = datosEnv && e === datosEnv.envios[datosEnv.envios.length - 1];
+    if (ultimo && ultimo.porEnvio) {
+      var envs = ultimo.env.envios, nE = envs.length;
+      ultimo.colores = [C.colorSinAvance].concat(envs.map(function (x, k) { return x === envSel ? COLOR_ENV_SEL : L.colorEnvio(k, nE); }));
+      try {
+        for (var c = 1; c < ultimo.colores.length; c++) {
+          if (ultimo.cubetas[c].length) await API.viewer.setObjectState(selector(ultimo.cubetas[c]), { color: L.rgba(ultimo.colores[c], 255) });
+        }
+      } catch (er) {}
+    }
+    pintarPanel();
+  }
+
   function pintarLeyenda() {
+    if (ultimo && ultimo.porEnvio) return pintarLeyendaEnvio();
     var nombres = ["Sin avance"].concat(C.etapas.map(function (e) { return e.nombre; }));
     var colores = [C.colorSinAvance].concat(C.etapas.map(function (e) { return e.color; }));
     var cuentas = colores.map(function () { return 0; }), kgs = colores.map(function () { return 0; }), kgTot = 0, pzTot = 0;
@@ -588,9 +710,28 @@
 
   function pintarPanel() {
     pintarLeyenda();
+    pintarCardEnvio();
     if (!ultimo) return;
     var f = $("filtro").value.trim().toUpperCase();
     var colores = ultimo.colores;
+    if (ultimo.porEnvio) {
+      $("cuerpo").innerHTML = ultimo.resumen.filter(function (r) { return !f || r.marca.indexOf(f) >= 0; })
+        .map(function (r) {
+          var env = r.total - r.rep[0];
+          var barra = r.rep.map(function (v, i) {
+            return v ? '<span style="width:' + (100 * v / r.total) + '%;background:' + colores[i] + '"></span>' : "";
+          });
+          barra = barra.slice(1).concat(barra[0]).join("");
+          return '<tr class="click" data-m="' + r.marca + '"' + (env > 0 ? "" : ' style="color:#9ca3af"') + ' title="Envíos: ' +
+            (r.envios.join(", ") || "ninguno") + '"><td>' + r.marca + "</td><td class='num'>" + r.total + "</td><td class='num'>" +
+            (r.kgTot ? ton(r.kgTot) : "") + "</td><td class='num'>" + (env || "") + "</td><td class='num'" +
+            (r.ultimo === envSel ? " style='color:" + COLOR_ENV_SEL + ";font-weight:700'" : "") + ">" + (r.ultimo || "") +
+            '</td><td><div class="barra">' + barra + "</div></td></tr>";
+        }).join("");
+      $("noEncontradas").innerHTML = ultimo.noEnc.length
+        ? '<div class="aviso">Enviadas según el archivo pero no encontradas en los modelos cargados: ' + ultimo.noEnc.join(", ") + "</div>" : "";
+      return;
+    }
     $("cuerpo").innerHTML = ultimo.resumen.filter(function (r) { return !f || r.marca.indexOf(f) >= 0; })
       .map(function (r) {
         var alc = []; var acum = 0;
@@ -611,7 +752,12 @@
 
   async function seleccionarEtapa(i, solo) {
     if (!ultimo || !ultimo.cubetas[i].length) return;
-    var sel = selector(ultimo.cubetas[i]);
+    return seleccionarLista(ultimo.cubetas[i], solo, ultimo.nombres ? ultimo.nombres[i] : (i === 0 ? "Sin avance" : C.etapas[i - 1].nombre));
+  }
+
+  async function seleccionarLista(lista, solo, nombre) {
+    if (!lista || !lista.length) return;
+    var sel = selector(lista);
     try {
       if (solo) {
         // igual que "Mostrar solo los seleccionados" del visor
@@ -635,9 +781,8 @@
       if (solo && ultimo.ocultas.length) await API.viewer.setObjectState(selector(ultimo.ocultas), { visible: false });
       await API.viewer.setSelection(sel, "set");
       await API.viewer.setCamera(sel, { animationTime: 400 });
-      var nombre = i === 0 ? "Sin avance" : C.etapas[i - 1].nombre;
-      var kg = ultimo.cubetas[i].reduce(function (s, x) { return s + (x.peso || 0); }, 0);
-      estado((solo ? "Mostrando solo " : "Seleccionadas: ") + nombre + " · " + ultimo.cubetas[i].length + " piezas · " + ton(kg) + " t");
+      var kg = lista.reduce(function (s, x) { return s + (x.peso || 0); }, 0);
+      estado((solo ? "Mostrando solo " : "Seleccionadas: ") + nombre + " · " + lista.length + " piezas · " + ton(kg) + " t");
     } catch (e) { estado("No se pudo seleccionar: " + (e.message || e), true); }
   }
 
@@ -729,6 +874,27 @@
     if (b.dataset.solo !== undefined) return seleccionarEtapa(+b.dataset.solo, true);
   });
   $("cuerpo").addEventListener("click", function (ev) {
+    var tr = ev.target.closest("tr[data-m]"); if (tr) seleccionarMarca(tr.dataset.m);
+  });
+  // Colorear por Etapa / Envío
+  function marcarModo(v) {
+    $("modoColor").value = v;
+    Array.prototype.forEach.call(document.querySelectorAll("#grupoModo button"), function (b) { b.classList.toggle("act", b.dataset.m === v); });
+  }
+  marcarModo(leerLocal("modoColor") === "envio" ? "envio" : "etapa");
+  $("grupoModo").addEventListener("click", function (ev) {
+    var b = ev.target.closest("button"); if (!b || b.dataset.m === $("modoColor").value) return;
+    marcarModo(b.dataset.m); guardarLocal("modoColor", b.dataset.m); if (ultimo) colorear(false);
+  });
+  // cuadro del envío
+  $("selEnvio").addEventListener("change", function () { cambiarEnvioSel(this.value); });
+  function listaEnvioSel() {
+    if (!ultimo || !ultimo.env || !datosEnv) return [];
+    return ultimo.env.cubetas[datosEnv.envios.indexOf(envSel) + 1] || [];
+  }
+  $("btnSelEnv").addEventListener("click", function () { seleccionarLista(listaEnvioSel(), false, "Envío " + envSel); });
+  $("btnSoloEnv").addEventListener("click", function () { seleccionarLista(listaEnvioSel(), true, "Envío " + envSel); });
+  $("cuerpoEnvio").addEventListener("click", function (ev) {
     var tr = ev.target.closest("tr[data-m]"); if (tr) seleccionarMarca(tr.dataset.m);
   });
   pintarLeyenda();

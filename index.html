@@ -57,13 +57,24 @@
   .tablaWrap { max-height:340px; overflow:auto; }
   details summary { cursor:pointer; color:var(--azul); font-weight:600; }
   pre { white-space:pre-wrap; font-size:11px; background:var(--gris); padding:6px; border-radius:4px; max-height:240px; overflow:auto; }
+  .cardEnv { border:1px solid var(--borde); border-left:4px solid #E8622C; border-radius:4px; padding:8px; background:#fffaf6; }
+  .encEnv { display:flex; justify-content:space-between; align-items:flex-start; gap:8px; }
+  .encEnv select { width:auto; max-width:130px; font-size:12px; padding:3px 4px; }
+  .numEnv { font-size:20px; font-weight:700; color:#E8622C; line-height:1.1; }
+  .numEnv span { font-size:11px; font-weight:400; color:#6b7280; margin-left:6px; }
+  .kpis { display:flex; gap:6px; margin-top:6px; }
+  .kpis div { flex:1; background:#fff; border:1px solid #f1d9c9; border-radius:4px; padding:4px; text-align:center; }
+  .kpis b { display:block; font-size:15px; color:#14325f; }
+  .kpis span { font-size:10.5px; color:#6b7280; }
+  td.fuera { color:#9ca3af; font-style:italic; }
+  .scrollLey { max-height:300px; overflow:auto; }
   .aviso { font-size:11px; color:#92400e; background:#fffbeb; border:1px solid #fde68a; padding:6px; border-radius:4px; margin-top:6px; }
 </style>
 </head>
 <body>
 <header>
   <h1>Avance de producción</h1>
-  <small>NABLA Acero · seguimiento por marca · v1.15</small>
+  <small>NABLA Acero · seguimiento por marca · v1.16</small>
 </header>
 
 <section>
@@ -83,6 +94,12 @@
     <option value="yx_">Y decreciente, luego X decreciente</option>
     <option value="z">De abajo hacia arriba (Z), luego X</option>
   </select>
+  <label>Colorear por</label>
+  <input type="hidden" id="modoColor" value="etapa">
+  <div class="seg" id="grupoModo">
+    <button type="button" data-m="etapa">Etapa</button>
+    <button type="button" data-m="envio">Envío</button>
+  </div>
   <label>Piezas a mostrar</label>
   <input type="hidden" id="filtroSec" value="todo">
   <div class="seg" id="grupoSec">
@@ -101,6 +118,22 @@
   </div>
   <div id="fechaAvance" class="fecha"></div>
   <div id="estado" style="margin-top:6px"></div>
+</section>
+
+<section id="secEnvio" style="display:none">
+  <div class="cardEnv">
+    <div class="encEnv">
+      <div><div class="tit" id="titEnvio">Último envío</div><div class="numEnv" id="numEnvio"></div></div>
+      <select id="selEnvio" title="Elegir otro envío"></select>
+    </div>
+    <div class="kpis" id="kpisEnvio"></div>
+    <div class="fila" style="margin-top:6px">
+      <button id="btnSelEnv">Seleccionar en el modelo</button>
+      <button id="btnSoloEnv">Ver solo este envío</button>
+    </div>
+    <div class="tablaWrap" style="max-height:170px;margin-top:6px"><table><thead><tr><th>Marca</th><th class="num">Pzas</th><th class="num">Ton</th></tr></thead>
+      <tbody id="cuerpoEnvio"></tbody></table></div>
+  </div>
 </section>
 
 <section>
@@ -130,8 +163,8 @@
 <script src="https://components.connect.trimble.com/trimble-connect-workspace-api/index.js"></script>
 <script src="msal-browser.min.js"></script>
 <script src="xlsx.full.min.js"></script>
-<script src="config.js?v=1.15"></script>
-<script src="logica.js?v=1.15"></script>
-<script src="app.js?v=1.15"></script>
+<script src="config.js?v=1.16"></script>
+<script src="logica.js?v=1.16"></script>
+<script src="app.js?v=1.16"></script>
 </body>
 </html>

@@ -126,6 +126,8 @@
       if (cM < 0) continue;
       var cP = col(["proyecto", "codigo", "project"]);
       var cE = col(["etapa"]), cQ = col(["cantidad"]);
+      var cO = col(["observaciones", "observacion", "envio", "no. envio", "numero de envio"]);
+      var cW = col(["peso uni", "peso unitario", "peso uni.", "peso (kg)", "peso kg"]);
       var datos = m.slice(r + 1).filter(function (f) {
         var v = norm(f && f[cM]); return v && v !== "totales" && v !== "total";
       });
@@ -139,21 +141,38 @@
       if (cE >= 0 && cQ >= 0) {
         return datos.map(function (f) {
           var x = limpiar(f[cM], cP >= 0 ? f[cP] : "");
-          return { marca: x.marca, proyecto: x.proyecto, etapa: f[cE], cantidad: f[cQ] };
+          var env = cO >= 0 ? numeroEnvio(f[cO]) : "";
+          return { marca: x.marca, proyecto: x.proyecto, etapa: f[cE], cantidad: f[cQ], envio: env };
         });
       }
+      // columnas de envío: encabezado = número correlativo (ej. 6304) o "Envío 6304"
+      var colsEnvio = [];
+      (m[r] || []).forEach(function (h, i) {
+        var t = String(h === undefined || h === null ? "" : h).trim();
+        var mm = t.match(/^(?:env[ií]o\s*(?:n[o°º.]*\s*)?)?(\d{3,7})$/i);
+        if (mm && i !== cM && i !== cP) colsEnvio.push({ i: i, envio: mm[1] });
+      });
       var colsEtapa = [];
       enc.forEach(function (h, i) {
         if (!h || /peso|pendiente|kg|ton/.test(h)) return;
-        SINONIMOS.forEach(function (s) { if (s.re.test(h)) colsEtapa.push({ i: i, etapa: s.etapa }); });
+        SINONIMOS.forEach(function (s) {
+          // si hay columnas por envío, el despacho sale de ellas (no de "Enviadas", que es su suma)
+          if (s.re.test(h) && !(colsEnvio.length && s.etapa === "Despacho")) colsEtapa.push({ i: i, etapa: s.etapa });
+        });
       });
-      if (!colsEtapa.length) continue;
+      if (!colsEtapa.length && !colsEnvio.length) continue;
       var out = [];
+      var num = function (v) { return Number(String(v === undefined || v === null ? "" : v).replace(",", ".")); };
       datos.forEach(function (f) {
         var x = limpiar(f[cM], cP >= 0 ? f[cP] : "");
+        var pu = cW >= 0 ? num(f[cW]) : NaN;
+        colsEnvio.forEach(function (c) {
+          var q = num(f[c.i]);
+          if (q > 0) out.push({ marca: x.marca, proyecto: x.proyecto, etapa: "Despacho", cantidad: q, envio: c.envio, pesoUni: pu > 0 ? pu : 0 });
+        });
         colsEtapa.forEach(function (c) {
-          var q = Number(String(f[c.i] === undefined || f[c.i] === null ? "" : f[c.i]).replace(",", "."));
-          if (q > 0) out.push({ marca: x.marca, proyecto: x.proyecto, etapa: c.etapa, cantidad: q });
+          var q = num(f[c.i]);
+          if (q > 0) out.push({ marca: x.marca, proyecto: x.proyecto, etapa: c.etapa, cantidad: q, pesoUni: pu > 0 ? pu : 0 });
         });
       });
       return out;
@@ -162,6 +181,41 @@
   }
 
   function leerCSV(texto) { return leerTabla(tokenizarCSV(texto)); }
+
+  // "Envío 6324" / "6324" / "Env. No. 6324" -> "6324"
+  function numeroEnvio(v) {
+    var m = String(v === undefined || v === null ? "" : v).match(/(?:^|env[ií]o\D{0,6})(\d{3,7})\b/i);
+    return m ? m[1] : "";
+  }
+
+  // Envíos por marca: { marca: [{envio, q}] } en orden correlativo, y lista de envíos ordenada
+  function sumarEnvios(filas, proyecto) {
+    var proy = String(proyecto || "").trim(), por = {}, todos = {}, peso = {};
+    filas.forEach(function (f) {
+      if (!f.envio) return;
+      if (proy && String(f.proyecto || "").trim() !== proy) return;
+      var m = normalizarMarca(f.marca), q = Number(String(f.cantidad || "0").replace(",", "."));
+      if (!m || !(q > 0)) return;
+      var k = (por[m] = por[m] || {});
+      k[f.envio] = (k[f.envio] || 0) + q;
+      todos[f.envio] = 1;
+      if (f.pesoUni > 0) peso[m] = f.pesoUni;
+    });
+    var orden = function (a, b) { return Number(a) - Number(b) || (a < b ? -1 : 1); };
+    var envios = Object.keys(todos).sort(orden);
+    var res = {};
+    Object.keys(por).forEach(function (m) {
+      res[m] = Object.keys(por[m]).sort(orden).map(function (e) { return { envio: e, q: por[m][e] }; });
+    });
+    return { porMarca: res, envios: envios, pesoUni: peso };
+  }
+
+  // Color de cada envío: escala de azul claro (más antiguo) a azul oscuro (más reciente)
+  function colorEnvio(k, n) {
+    var a = [191, 215, 245], b = [11, 46, 107], t = n > 1 ? k / (n - 1) : 1;
+    var h = function (x) { return ("0" + Math.round(x).toString(16)).slice(-2); };
+    return "#" + h(a[0] + (b[0] - a[0]) * t) + h(a[1] + (b[1] - a[1]) * t) + h(a[2] + (b[2] - a[2]) * t);
+  }
 
   // "#2EAA4A" -> {r,g,b,a} opaco (Trimble Connect conserva la transparencia anterior si se manda solo el hex)
   function rgba(hex, a) {
@@ -199,7 +253,7 @@
   }
 
   var api = { rgba: rgba, pesoDeObjeto: pesoDeObjeto, normalizarMarca: normalizarMarca, normalizarEtapa: normalizarEtapa, marcaDeObjeto: marcaDeObjeto,
-              sumarAvance: sumarAvance, repartir: repartir, leerCSV: leerCSV, leerTabla: leerTabla, tokenizarCSV: tokenizarCSV };
+              sumarAvance: sumarAvance, repartir: repartir, sumarEnvios: sumarEnvios, colorEnvio: colorEnvio, numeroEnvio: numeroEnvio, leerCSV: leerCSV, leerTabla: leerTabla, tokenizarCSV: tokenizarCSV };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else raiz.Logica = api;
 })(this);
