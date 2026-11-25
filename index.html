@@ -74,7 +74,7 @@
 <body>
 <header>
   <h1>Avance de producción</h1>
-  <small>NABLA Acero · seguimiento por marca · v1.18</small>
+  <small>NABLA Acero · seguimiento por marca · v1.19</small>
 </header>
 
 <section>
@@ -99,15 +99,6 @@
   <div class="seg" id="grupoModo">
     <button type="button" data-m="etapa">Etapa</button>
     <button type="button" data-m="envio">Envío</button>
-  </div>
-  <div id="cajaResaltar" style="display:none">
-    <label for="resaltar">Envíos con color propio</label>
-    <select id="resaltar">
-      <option value="3">Últimos 3 (anteriores en un solo tono)</option>
-      <option value="5" selected>Últimos 5 (anteriores en un solo tono)</option>
-      <option value="8">Últimos 8 (anteriores en un solo tono)</option>
-      <option value="0">Todos (colores alternados)</option>
-    </select>
   </div>
   <label>Piezas a mostrar</label>
   <input type="hidden" id="filtroSec" value="todo">
@@ -137,8 +128,9 @@
     </div>
     <div class="kpis" id="kpisEnvio"></div>
     <div class="fila" style="margin-top:6px">
-      <button id="btnSelEnv">Seleccionar en el modelo</button>
+      <button id="btnSelEnv">Seleccionar</button>
       <button id="btnSoloEnv">Ver solo este envío</button>
+      <button id="btnTodoEnv">Mostrar todo</button>
     </div>
     <div class="tablaWrap" style="max-height:170px;margin-top:6px"><table><thead><tr><th>Marca</th><th class="num">Pzas</th><th class="num">Ton</th></tr></thead>
       <tbody id="cuerpoEnvio"></tbody></table></div>
@@ -172,8 +164,8 @@
 <script src="https://components.connect.trimble.com/trimble-connect-workspace-api/index.js"></script>
 <script src="msal-browser.min.js"></script>
 <script src="xlsx.full.min.js"></script>
-<script src="config.js?v=1.18"></script>
-<script src="logica.js?v=1.18"></script>
-<script src="app.js?v=1.18"></script>
+<script src="config.js?v=1.19"></script>
+<script src="logica.js?v=1.19"></script>
+<script src="app.js?v=1.19"></script>
 </body>
 </html>

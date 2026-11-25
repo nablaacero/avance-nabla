@@ -513,7 +513,7 @@
       var nombres = ["Sin avance"].concat(C.etapas.map(function (e) { return e.nombre; }));
       if (porEnvio) {
         cubetas = envCub;
-        colores = [C.colorSinAvance].concat(L.coloresEnvios(envios, envSel, nResaltar()));
+        colores = [C.colorSinAvance].concat(L.coloresEnvios(envios, envSel));
         nombres = ["Sin envío"].concat(envios.map(function (e) { return "Envío " + e; }));
       }
       estado("Aplicando colores…");
@@ -577,51 +577,49 @@
   var ICO_OJO = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7S1 12 1 12z"/><circle cx="12" cy="12" r="3"/></svg>';
 
   function pintarLeyendaEnvio() {
-    var u = ultimo, n = u.cubetas.length, cuentas = [], kgs = [], kgTot = 0, pzTot = 0;
-    for (var i = 0; i < n; i++) {
+    var u = ultimo, envs = u.env.envios, n = envs.length, cuentas = [], kgs = [], kgTot = 0, pzTot = 0;
+    for (var i = 0; i <= n; i++) {
       cuentas[i] = u.cubetas[i].length;
       kgs[i] = u.cubetas[i].reduce(function (a, x) { return a + (x.peso || 0); }, 0);
       kgTot += kgs[i]; pzTot += cuentas[i];
     }
     var pct = function (kg) { return kgTot ? (100 * kg / kgTot).toFixed(1) + "%" : ""; };
-    var fila = function (i) {
-      var acc = cuentas[i]
-        ? '<button class="ico" data-sel="' + i + '" title="Seleccionar en el modelo">' + ICO_SEL + "</button>" +
-          '<button class="ico" data-solo="' + i + '" title="Mostrar solo estas piezas">' + ICO_OJO + "</button>" : "";
-      var esSel = i > 0 && u.env.envios[i - 1] === envSel;
-      return '<tr' + (!cuentas[i] ? ' class="vacia"' : "") + (esSel ? ' style="font-weight:700"' : "") +
-        '><td><span class="sw" style="background:' + u.colores[i] + '"></span>' + u.nombres[i] +
-        (i > 0 ? ' <span style="color:#9ca3af;font-weight:400">#' + i + "</span>" : "") + '</td><td class="num">' + cuentas[i] +
-        '</td><td class="num">' + ton(kgs[i]) + '</td><td class="num">' + pct(kgs[i]) + '</td><td class="accs">' + acc + "</td></tr>";
+    // grupos de color: último (naranja), elegido (azul fuerte), enviados antes (azul), sin enviar (gris)
+    var kUlt = n, kSel = envs.indexOf(envSel) + 1, grupos = [];
+    var suma = function (ks) {
+      var lst = [], pz = 0, kg = 0;
+      ks.forEach(function (k) { Array.prototype.push.apply(lst, u.cubetas[k]); pz += cuentas[k]; kg += kgs[k]; });
+      return { lst: lst, pz: pz, kg: kg };
     };
-    var nr = nResaltar(), orden = [], ant = [];
-    for (var j = n - 1; j >= 1; j--) {
-      var esAnt = u.colores[j] === L.COLOR_ANTERIORES;
-      (esAnt ? ant : orden).push(j);
-    }
-    var filaAnt = "";
-    if (ant.length) {
-      var cA = 0, kA = 0, lstA = [];
-      ant.forEach(function (j) { cA += cuentas[j]; kA += kgs[j]; Array.prototype.push.apply(lstA, u.cubetas[j]); });
-      u.cubetaAnt = lstA;
-      filaAnt = '<tr' + (!cA ? ' class="vacia"' : "") + '><td><span class="sw" style="background:' + L.COLOR_ANTERIORES + '"></span>Anteriores <span style="color:#9ca3af">(' +
-        ant.length + " envíos: " + u.env.envios[ant[ant.length - 1] - 1] + "–" + u.env.envios[ant[0] - 1] + ')</span></td><td class="num">' + cA +
-        '</td><td class="num">' + ton(kA) + '</td><td class="num">' + pct(kA) + '</td><td class="accs">' +
-        (cA ? '<button class="ico" data-selant="1" title="Seleccionar en el modelo">' + ICO_SEL + '</button><button class="ico" data-soloant="1" title="Mostrar solo estas piezas">' + ICO_OJO + "</button>" : "") +
-        "</td></tr>";
-    }
+    grupos.push(Object.assign({ nombre: "Último envío " + envs[n - 1], color: L.COLOR_SEL }, suma([kUlt])));
+    if (kSel > 0 && kSel !== kUlt) grupos.push(Object.assign({ nombre: "Envío elegido " + envSel, color: L.COLOR_ELEGIDO }, suma([kSel])));
+    var antes = []; for (var k = 1; k < n; k++) if (k !== kSel) antes.push(k);
+    grupos.push(Object.assign({ nombre: "Enviado antes <span style='color:#9ca3af'>(" + antes.length + " envíos)</span>", color: L.COLOR_ENVIADO }, suma(antes)));
+    grupos.push(Object.assign({ nombre: "Sin enviar", color: C.colorSinAvance }, suma([0])));
+    u.grupos = grupos;
     var desp = kgTot - kgs[0], despPz = pzTot - cuentas[0];
-    var html = '<div class="tit">Envíos (del más reciente al más antiguo)</div>' +
+    var html = '<div class="tit">Envíos</div>' +
       '<div class="acum"><span class="en">Enviado</span><div class="bar"><span style="width:' + (kgTot ? (100 * desp / kgTot).toFixed(1) : 0) +
-      '%;background:#2E75D6"></span></div><span class="vl">' + pct(desp) + " · " + ton(desp) + " t · " + despPz + " pzas</span></div>" +
-      '<div class="scrollLey"><table class="ley"><thead><tr><th>Envío</th><th class="num">Pzas</th><th class="num">Ton</th><th class="num">% peso</th><th></th></tr></thead><tbody>' +
-      orden.map(fila).join("") + filaAnt + fila(0) +
+      '%;background:' + L.COLOR_ENVIADO + '"></span></div><span class="vl">' + pct(desp) + " · " + ton(desp) + " t · " + despPz + " pzas</span></div>" +
+      '<table class="ley"><thead><tr><th>Color</th><th class="num">Pzas</th><th class="num">Ton</th><th class="num">% peso</th><th></th></tr></thead><tbody>' +
+      grupos.map(function (g, gi) {
+        var acc = g.pz ? '<button class="ico" data-gsel="' + gi + '" title="Seleccionar en el modelo">' + ICO_SEL + "</button>" +
+          '<button class="ico" data-gsolo="' + gi + '" title="Mostrar solo estas piezas">' + ICO_OJO + "</button>" : "";
+        return "<tr" + (!g.pz ? ' class="vacia"' : "") + '><td><span class="sw" style="background:' + g.color + '"></span>' + g.nombre +
+          '</td><td class="num">' + g.pz + '</td><td class="num">' + ton(g.kg) + '</td><td class="num">' + pct(g.kg) + '</td><td class="accs">' + acc + "</td></tr>";
+      }).join("") +
       '<tr class="tot"><td>Total en modelo</td><td class="num">' + pzTot + '</td><td class="num">' + ton(kgTot) +
       '</td><td class="num">100%</td><td class="accs"><button class="ico" id="btnTodo" title="Volver a mostrar todo el modelo">' + ICO_OJO + "</button></td></tr>" +
-      "</tbody></table></div>" +
-      '<div class="nota"><span class="sw" style="display:inline-block;background:' + COLOR_ENV_SEL + '"></span> envío del cuadro · ' +
-      (nr ? "los " + nr + " más recientes con color propio · " : "colores alternados · ") +
-      '<span class="sw" style="display:inline-block;background:' + C.colorSinAvance + '"></span> sin enviar</div>';
+      "</tbody></table>" +
+      '<details style="margin-top:8px"><summary>Detalle por envío (' + n + ")</summary>" +
+      '<div class="scrollLey"><table class="ley"><thead><tr><th>Envío</th><th class="num">Pzas</th><th class="num">Ton</th><th></th></tr></thead><tbody>' +
+      envs.map(function (e, k) { return k + 1; }).reverse().map(function (k) {
+        var acc = cuentas[k] ? '<button class="ico" data-sel="' + k + '" title="Seleccionar en el modelo">' + ICO_SEL + "</button>" +
+          '<button class="ico" data-solo="' + k + '" title="Mostrar solo estas piezas">' + ICO_OJO + "</button>" : "";
+        return "<tr" + (!cuentas[k] ? ' class="vacia"' : "") + '><td><span class="sw" style="background:' + u.colores[k] + '"></span>' + envs[k - 1] +
+          ' <span style="color:#9ca3af">#' + k + '</span></td><td class="num">' + cuentas[k] + '</td><td class="num">' + ton(kgs[k]) +
+          '</td><td class="accs">' + acc + "</td></tr>";
+      }).join("") + "</tbody></table></div></details>";
     $("leyenda").innerHTML = html;
     $("encTabla").innerHTML = "<th>Marca</th><th class='num'>Pzas</th><th class='num'>Ton</th><th class='num' title='Piezas enviadas'>Env</th>" +
       "<th class='num'>Últ. envío</th><th></th>";
@@ -638,6 +636,8 @@
     }).join("");
     $("titEnvio").textContent = esUlt ? "Último envío" : "Envío seleccionado";
     $("numEnvio").innerHTML = envSel + "<span>n.º " + (k + 1) + " de " + envs.length + "</span>";
+    $("numEnvio").style.color = esUlt ? L.COLOR_SEL : L.COLOR_ELEGIDO;
+    document.querySelector(".cardEnv").style.borderLeftColor = esUlt ? L.COLOR_SEL : L.COLOR_ELEGIDO;
     // marcas del envío: peso del listado de producción (Peso Uni) o, si no viene, del modelo
     var lineas = [], pz = 0, kg = 0;
     Object.keys(datosEnv.porMarca).forEach(function (m) {
@@ -667,13 +667,12 @@
     $("btnSelEnv").disabled = $("btnSoloEnv").disabled = !hay;
   }
 
-  function nResaltar() { var v = $("resaltar") && $("resaltar").value; return v === undefined || v === null || v === "" ? 5 : +v; }
 
   async function cambiarEnvioSel(e) {
     envSel = e; envSelUltimo = datosEnv && e === datosEnv.envios[datosEnv.envios.length - 1];
     if (ultimo && ultimo.porEnvio) {
       var envs = ultimo.env.envios, nE = envs.length;
-      ultimo.colores = [C.colorSinAvance].concat(L.coloresEnvios(envs, envSel, nResaltar()));
+      ultimo.colores = [C.colorSinAvance].concat(L.coloresEnvios(envs, envSel));
       try {
         for (var c = 1; c < ultimo.colores.length; c++) {
           if (ultimo.cubetas[c].length) await API.viewer.setObjectState(selector(ultimo.cubetas[c]), { color: L.rgba(ultimo.colores[c], 255) });
@@ -890,8 +889,8 @@
     if (b.id === "btnTodo") return mostrarTodo();
     if (b.dataset.sel !== undefined) return seleccionarEtapa(+b.dataset.sel, false);
     if (b.dataset.solo !== undefined) return seleccionarEtapa(+b.dataset.solo, true);
-    if (b.dataset.selant !== undefined) return seleccionarLista(ultimo.cubetaAnt, false, "Envíos anteriores");
-    if (b.dataset.soloant !== undefined) return seleccionarLista(ultimo.cubetaAnt, true, "Envíos anteriores");
+    if (b.dataset.gsel !== undefined) { var g = ultimo.grupos[+b.dataset.gsel]; return seleccionarLista(g.lst, false, g.nombre.replace(/<[^>]+>/g, "")); }
+    if (b.dataset.gsolo !== undefined) { var g2 = ultimo.grupos[+b.dataset.gsolo]; return seleccionarLista(g2.lst, true, g2.nombre.replace(/<[^>]+>/g, "")); }
   });
   $("cuerpo").addEventListener("click", function (ev) {
     var tr = ev.target.closest("tr[data-m]"); if (tr) seleccionarMarca(tr.dataset.m);
@@ -908,15 +907,14 @@
   });
   // cuadro del envío
   $("selEnvio").addEventListener("change", function () { cambiarEnvioSel(this.value); });
-  var r0 = leerLocal("resaltar"); if (r0 !== null && $("resaltar").querySelector('option[value="' + r0 + '"]')) $("resaltar").value = r0;
-  $("resaltar").addEventListener("change", function () { guardarLocal("resaltar", this.value); if (ultimo && ultimo.porEnvio) cambiarEnvioSel(envSel); });
-  function verResaltar() { $("cajaResaltar").style.display = $("modoColor").value === "envio" ? "block" : "none"; }
+  function verResaltar() {}
   function listaEnvioSel() {
     if (!ultimo || !ultimo.env || !datosEnv) return [];
     return ultimo.env.cubetas[datosEnv.envios.indexOf(envSel) + 1] || [];
   }
   $("btnSelEnv").addEventListener("click", function () { seleccionarLista(listaEnvioSel(), false, "Envío " + envSel); });
   $("btnSoloEnv").addEventListener("click", function () { seleccionarLista(listaEnvioSel(), true, "Envío " + envSel); });
+  $("btnTodoEnv").addEventListener("click", function () { mostrarTodo(); });
   $("cuerpoEnvio").addEventListener("click", function (ev) {
     var tr = ev.target.closest("tr[data-m]"); if (tr) seleccionarMarca(tr.dataset.m);
   });

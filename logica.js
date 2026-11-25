@@ -215,17 +215,16 @@
                     "#E377C2", "#8C564B", "#FFB000", "#0B2E6B", "#00A087", "#7F3C8D"];
   var COLOR_SEL = "#E8622C", COLOR_ANTERIORES = "#C9D6E8";
 
-  // Colores de los envíos (en orden correlativo). El envío 'sel' va en naranja; los 'nRes' más
-  // recientes llevan colores distintos de la paleta; los anteriores, un solo tono claro (nRes = 0: todos con color).
-  function coloresEnvios(envios, sel, nRes) {
-    var n = envios.length, out = new Array(n), k = 0;
-    for (var i = n - 1; i >= 0; i--) {
-      if (envios[i] === sel) { out[i] = COLOR_SEL; continue; }
-      var rango = n - 1 - i;                     // 0 = el más reciente
-      if (nRes > 0 && rango >= nRes) { out[i] = COLOR_ANTERIORES; continue; }
-      out[i] = PALETA_ENV[k++ % PALETA_ENV.length];
-    }
-    return out;
+  // Solo 4 colores: último envío = naranja; envío elegido en el cuadro (si no es el último) = azul fuerte;
+  // los demás envíos = azul; sin enviar = gris (lo pone el panel)
+  var COLOR_ENVIADO = "#5B9BD5", COLOR_ELEGIDO = "#0B2E6B";
+  function coloresEnvios(envios, sel) {
+    var n = envios.length;
+    return envios.map(function (e, i) {
+      if (i === n - 1) return COLOR_SEL;
+      if (e === sel) return COLOR_ELEGIDO;
+      return COLOR_ENVIADO;
+    });
   }
   function colorEnvio(k, n) { return PALETA_ENV[(n - 1 - k) % PALETA_ENV.length]; }
 
@@ -265,7 +264,7 @@
   }
 
   var api = { rgba: rgba, pesoDeObjeto: pesoDeObjeto, normalizarMarca: normalizarMarca, normalizarEtapa: normalizarEtapa, marcaDeObjeto: marcaDeObjeto,
-              sumarAvance: sumarAvance, repartir: repartir, sumarEnvios: sumarEnvios, colorEnvio: colorEnvio, coloresEnvios: coloresEnvios, COLOR_ANTERIORES: COLOR_ANTERIORES, numeroEnvio: numeroEnvio, leerCSV: leerCSV, leerTabla: leerTabla, tokenizarCSV: tokenizarCSV };
+              sumarAvance: sumarAvance, repartir: repartir, sumarEnvios: sumarEnvios, colorEnvio: colorEnvio, coloresEnvios: coloresEnvios, COLOR_ANTERIORES: COLOR_ANTERIORES, COLOR_ENVIADO: COLOR_ENVIADO, COLOR_ELEGIDO: COLOR_ELEGIDO, COLOR_SEL: COLOR_SEL, numeroEnvio: numeroEnvio, leerCSV: leerCSV, leerTabla: leerTabla, tokenizarCSV: tokenizarCSV };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else raiz.Logica = api;
 })(this);
