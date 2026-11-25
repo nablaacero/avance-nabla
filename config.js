@@ -31,8 +31,8 @@ window.CONFIG = {
   etapas: [
     { nombre: "Armado",   color: "#F2C500" },   // amarillo
     { nombre: "Pintura",  color: "#F28C28" },   // naranja
-    { nombre: "Despacho", color: "#2E75D6" },   // azul
-    { nombre: "Montaje",  color: "#2EAA4A" }    // verde
+    { nombre: "Despacho", color: "#2E75D6" }    // azul
+    // Montaje se lleva en otro controlador (no se colorea aquí)
   ],
   colorSinAvance: "#BDBDBD",          // marcas del modelo sin ningún reporte
   atenuarResto: true,                  // objetos sin marca reconocida -> gris transparente

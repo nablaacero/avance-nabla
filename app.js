@@ -513,7 +513,7 @@
       var nombres = ["Sin avance"].concat(C.etapas.map(function (e) { return e.nombre; }));
       if (porEnvio) {
         cubetas = envCub;
-        colores = [C.colorSinAvance].concat(envios.map(function (e, k) { return e === envSel ? COLOR_ENV_SEL : L.colorEnvio(k, nE); }));
+        colores = [C.colorSinAvance].concat(L.coloresEnvios(envios, envSel, nResaltar()));
         nombres = ["Sin envío"].concat(envios.map(function (e) { return "Envío " + e; }));
       }
       estado("Aplicando colores…");
@@ -594,18 +594,34 @@
         (i > 0 ? ' <span style="color:#9ca3af;font-weight:400">#' + i + "</span>" : "") + '</td><td class="num">' + cuentas[i] +
         '</td><td class="num">' + ton(kgs[i]) + '</td><td class="num">' + pct(kgs[i]) + '</td><td class="accs">' + acc + "</td></tr>";
     };
-    var orden = []; for (var j = n - 1; j >= 1; j--) orden.push(j); orden.push(0);
+    var nr = nResaltar(), orden = [], ant = [];
+    for (var j = n - 1; j >= 1; j--) {
+      var esAnt = u.colores[j] === L.COLOR_ANTERIORES;
+      (esAnt ? ant : orden).push(j);
+    }
+    var filaAnt = "";
+    if (ant.length) {
+      var cA = 0, kA = 0, lstA = [];
+      ant.forEach(function (j) { cA += cuentas[j]; kA += kgs[j]; Array.prototype.push.apply(lstA, u.cubetas[j]); });
+      u.cubetaAnt = lstA;
+      filaAnt = '<tr' + (!cA ? ' class="vacia"' : "") + '><td><span class="sw" style="background:' + L.COLOR_ANTERIORES + '"></span>Anteriores <span style="color:#9ca3af">(' +
+        ant.length + " envíos: " + u.env.envios[ant[ant.length - 1] - 1] + "–" + u.env.envios[ant[0] - 1] + ')</span></td><td class="num">' + cA +
+        '</td><td class="num">' + ton(kA) + '</td><td class="num">' + pct(kA) + '</td><td class="accs">' +
+        (cA ? '<button class="ico" data-selant="1" title="Seleccionar en el modelo">' + ICO_SEL + '</button><button class="ico" data-soloant="1" title="Mostrar solo estas piezas">' + ICO_OJO + "</button>" : "") +
+        "</td></tr>";
+    }
     var desp = kgTot - kgs[0], despPz = pzTot - cuentas[0];
     var html = '<div class="tit">Envíos (del más reciente al más antiguo)</div>' +
       '<div class="acum"><span class="en">Enviado</span><div class="bar"><span style="width:' + (kgTot ? (100 * desp / kgTot).toFixed(1) : 0) +
       '%;background:#2E75D6"></span></div><span class="vl">' + pct(desp) + " · " + ton(desp) + " t · " + despPz + " pzas</span></div>" +
       '<div class="scrollLey"><table class="ley"><thead><tr><th>Envío</th><th class="num">Pzas</th><th class="num">Ton</th><th class="num">% peso</th><th></th></tr></thead><tbody>' +
-      orden.map(fila).join("") +
+      orden.map(fila).join("") + filaAnt + fila(0) +
       '<tr class="tot"><td>Total en modelo</td><td class="num">' + pzTot + '</td><td class="num">' + ton(kgTot) +
       '</td><td class="num">100%</td><td class="accs"><button class="ico" id="btnTodo" title="Volver a mostrar todo el modelo">' + ICO_OJO + "</button></td></tr>" +
       "</tbody></table></div>" +
-      '<div class="nota">Más claro = envío más antiguo · más oscuro = más reciente · <span class="sw" style="display:inline-block;background:' + COLOR_ENV_SEL +
-      '"></span> envío resaltado · gris = sin enviar</div>';
+      '<div class="nota"><span class="sw" style="display:inline-block;background:' + COLOR_ENV_SEL + '"></span> envío del cuadro · ' +
+      (nr ? "los " + nr + " más recientes con color propio · " : "colores alternados · ") +
+      '<span class="sw" style="display:inline-block;background:' + C.colorSinAvance + '"></span> sin enviar</div>';
     $("leyenda").innerHTML = html;
     $("encTabla").innerHTML = "<th>Marca</th><th class='num'>Pzas</th><th class='num'>Ton</th><th class='num' title='Piezas enviadas'>Env</th>" +
       "<th class='num'>Últ. envío</th><th></th>";
@@ -651,11 +667,13 @@
     $("btnSelEnv").disabled = $("btnSoloEnv").disabled = !hay;
   }
 
+  function nResaltar() { var v = $("resaltar") && $("resaltar").value; return v === undefined || v === null || v === "" ? 5 : +v; }
+
   async function cambiarEnvioSel(e) {
     envSel = e; envSelUltimo = datosEnv && e === datosEnv.envios[datosEnv.envios.length - 1];
     if (ultimo && ultimo.porEnvio) {
       var envs = ultimo.env.envios, nE = envs.length;
-      ultimo.colores = [C.colorSinAvance].concat(envs.map(function (x, k) { return x === envSel ? COLOR_ENV_SEL : L.colorEnvio(k, nE); }));
+      ultimo.colores = [C.colorSinAvance].concat(L.coloresEnvios(envs, envSel, nResaltar()));
       try {
         for (var c = 1; c < ultimo.colores.length; c++) {
           if (ultimo.cubetas[c].length) await API.viewer.setObjectState(selector(ultimo.cubetas[c]), { color: L.rgba(ultimo.colores[c], 255) });
@@ -872,6 +890,8 @@
     if (b.id === "btnTodo") return mostrarTodo();
     if (b.dataset.sel !== undefined) return seleccionarEtapa(+b.dataset.sel, false);
     if (b.dataset.solo !== undefined) return seleccionarEtapa(+b.dataset.solo, true);
+    if (b.dataset.selant !== undefined) return seleccionarLista(ultimo.cubetaAnt, false, "Envíos anteriores");
+    if (b.dataset.soloant !== undefined) return seleccionarLista(ultimo.cubetaAnt, true, "Envíos anteriores");
   });
   $("cuerpo").addEventListener("click", function (ev) {
     var tr = ev.target.closest("tr[data-m]"); if (tr) seleccionarMarca(tr.dataset.m);
@@ -884,10 +904,13 @@
   marcarModo(leerLocal("modoColor") === "envio" ? "envio" : "etapa");
   $("grupoModo").addEventListener("click", function (ev) {
     var b = ev.target.closest("button"); if (!b || b.dataset.m === $("modoColor").value) return;
-    marcarModo(b.dataset.m); guardarLocal("modoColor", b.dataset.m); if (ultimo) colorear(false);
+    marcarModo(b.dataset.m); guardarLocal("modoColor", b.dataset.m); verResaltar(); if (ultimo) colorear(false);
   });
   // cuadro del envío
   $("selEnvio").addEventListener("change", function () { cambiarEnvioSel(this.value); });
+  var r0 = leerLocal("resaltar"); if (r0 !== null && $("resaltar").querySelector('option[value="' + r0 + '"]')) $("resaltar").value = r0;
+  $("resaltar").addEventListener("change", function () { guardarLocal("resaltar", this.value); if (ultimo && ultimo.porEnvio) cambiarEnvioSel(envSel); });
+  function verResaltar() { $("cajaResaltar").style.display = $("modoColor").value === "envio" ? "block" : "none"; }
   function listaEnvioSel() {
     if (!ultimo || !ultimo.env || !datosEnv) return [];
     return ultimo.env.cubetas[datosEnv.envios.indexOf(envSel) + 1] || [];
@@ -897,6 +920,7 @@
   $("cuerpoEnvio").addEventListener("click", function (ev) {
     var tr = ev.target.closest("tr[data-m]"); if (tr) seleccionarMarca(tr.dataset.m);
   });
+  verResaltar();
   pintarLeyenda();
   conectar();
 })();
