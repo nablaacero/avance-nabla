@@ -1,80 +1,51 @@
 // =====================================================================
-//  CONFIGURACIÓN - Avance NABLA (extensión de Trimble Connect)
+//  CONFIGURACIÓN - PrograFAB (extensión de Trimble Connect)
 //  Este es el único archivo que normalmente hay que editar.
 // =====================================================================
 window.CONFIG = {
-  // --- SharePoint (lista donde la app de Power Apps guarda los avances) ---
-  sharepointHost: "gruponablagt.sharepoint.com",
-  sitePath: "/sites/NablaAcero-Produccion",
-  listName: "Avance de produccion",
+  // Grupo de propiedades que exporta SteelX / Advance Steel en el IFC
+  pset: "Nabla Aceros",
 
-  // Nombres INTERNOS de las columnas de la lista
-  // (la columna "Marca" internamente se sigue llamando "Title")
-  campos: {
-    marca: "Title",
-    proyecto: "Proyecto",
-    etapa: "Etapa",
-    cantidad: "Cantidad"
-  },
+  // --- Dónde se guardan las fases dentro del proyecto de Trimble Connect ---
+  // (la carpeta debe existir; si no existe, las fases quedan solo en este navegador)
+  carpetaFases: "5_FAB/5.3_LISTADOS/5.3.5-PROGRAMACION",
+  // nombre del archivo: {proy} se reemplaza por el número de proyecto
+  archivoFases: "PrograFAB_{proy}.json",
 
-  // --- Archivo de avance dentro del proyecto de Trimble Connect ---
-  // Se toma el archivo más reciente (.xlsx, .xls o .csv) de esta carpeta.
-  carpetaProduccion: "5_FAB/5.3_LISTADOS/5.3.4-PRODUCCION",
-
-  // --- Microsoft Entra ID (los da TI después de registrar la aplicación) ---
-  // Mientras clientId esté vacío, la extensión solo funciona en modo CSV.
-  clientId: "",
-  tenantId: "36b8dde3-214e-4d8f-bbfd-c54aae7423b4",
-  redirectUri: "https://nablaacero.github.io/avance-nabla/",
-
-  // --- Etapas en orden de avance y su color ---
-  etapas: [
-    { nombre: "Armado",   color: "#F2C500" },   // amarillo
-    { nombre: "Pintura",  color: "#F28C28" },   // naranja
-    { nombre: "Despacho", color: "#2E75D6" }    // azul
-    // Montaje se lleva en otro controlador (no se colorea aquí)
-  ],
-  colorSinAvance: "#BDBDBD",          // marcas del modelo sin ningún reporte
-  atenuarResto: true,                  // objetos sin marca reconocida -> gris transparente
-
-  // --- Dónde buscar la marca del ensamble en las propiedades del modelo ---
-  // Se prueban en este orden. "Product.Name" = nombre del producto IFC.
-  propiedadesMarca: [
-    "Tekla Assembly.Assembly/Cast unit Mark",
-    "Tekla Assembly.ASSEMBLY_POS",
-    "Assembly.ASSEMBLY_POS",
-    "Part Properties.Assembly Mark",
-    "Nabla Aceros.MainPartMark",
-    "Nabla Aceros.Main Part",
-    "Nabla Aceros.Marca",
-    "Identity Data.Mark",
-    "Product.Name"          // solo en objetos ensamble
-  ],
-
-  // Dónde buscar el peso (kg). Si el ensamble no lo trae, se suman sus piezas.
-  propiedadesPeso: [
-    "Assembly.WEIGHT",
-    "Tekla Assembly.Weight",
-    "Nabla Aceros.WeightNet_kg",
-    "Tekla Common.Weight",
-    "Part Properties.Weight"
-  ],
-
-  // Número de proyecto: se toma de los primeros dígitos del nombre del proyecto
-  // de Trimble Connect (ej. "1256 Amatitlán" -> 1256). Se puede cambiar en el panel.
+  // Número de proyecto: primeros dígitos del nombre del proyecto de Trimble Connect
   patronProyecto: "^\\s*(\\d{3,5})",
 
-  // Prefijos de marca que se ocultan con la casilla "Ocultar secundarios"
-  // (se toma la parte en letras antes del número final: CT8001 -> CT, AL-2CF5 -> CF)
-  // CT/CF costaneras · BC bracones · GT canal pluvial · TS tensores
-  prefijosOcultables: ["CT", "CF", "BC", "GT", "TS"],
-  // Grupos del proyecto de Trimble Connect que NO pueden usar la extensión
-  // (mismo nombre que en Equipo → Grupos; no importan mayúsculas ni tildes)
-  gruposBloqueados: ["EXTERNO"],
+  // --- Roles (hoja «Catalogo de roles» de Control_Listados_Ing_Detalle.xlsm) ---
+  // Patines y almas de perfiles armados: si la placa es rectangular se suman en metros lineales
+  rolesPatin: ["Flange Girder", "Flange Column", "Flange Rafter", "Patin Viga", "Patin Columna",
+               "Flange T", "Flange Angle", "Haunchflange"],
+  rolesAlma:  ["Web Girder", "Web Column", "Web Rafter", "Web Brace", "Alma Cartela Viga", "Alma Cartela Columna",
+               "Parte Recta Viga", "Parte Recta Columna", "PlatedBeam-Web", "Haunchweb"],
+  // Tolerancia para decidir que una placa es rectangular (área real vs ancho x largo)
+  tolRecta: 0.01,
 
-  // true = la misma casilla también oculta tornillos, tuercas y arandelas
-  ocultarTornillos: true,
+  // Roles que NO SE FABRICAN (no salen en los listados)
+  rolesNoFabrica: ["Anchor - No Standard", "Anchor beam", "Anchor Bolt", "Anchor camera", "Beam not unfolded",
+    "Blind hole", "Bocatubo", "Bolt", "Bolt Above", "Bolt Below", "Bolt Web", "Bottom Landing", "Center mark",
+    "Cladding Screw", "Concrete beam", "Concrete beams", "Concrete ceiling", "Concrete foundation", "Concrete Landing",
+    "Concrete Landing Bottom", "Concrete Landing Top", "Concrete Quarter Landing", "Concrete Stair Flight",
+    "Concrete Stair Footer", "Concrete wall", "Countersink hole", "Countersunk hole", "Environment", "Existing",
+    "Feature", "Fischer Anchor", "Glass", "Group", "Hilti Anchor", "Hole", "Intersection camera", "Node camera",
+    "None", "Not overridden role", "Not visible", "Nut", "Off", "Overview camera", "Plant 3D - Equipment",
+    "Plant 3D - Pipe", "Plant 3D - Pipe inline asset", "Plant 3D - Structure anchorage", "Plant 3D - Structure footing",
+    "Plant 3D - Structure grating", "Plant 3D - Structure ladder", "Plant 3D - Structure member",
+    "Plant 3D - Structure plate", "Plant 3D - Structure railing", "Plant 3D - Structure stair", "Plant 3D - Support",
+    "Roof camera", "Shear Stud", "Shear Stud Welding", "Slab", "Slotted Hole", "Solid objects", "Special Nuts",
+    "Special Washers", "Stem", "Tensioner", "Threaded hole", "Timber Tread", "Upat Anchor", "Visible", "Weld", "Welding"],
 
-  // Actualización automática mientras el panel está abierto (minutos, 0 = no)
-  autoActualizarMin: 5
+  // Colores que se van asignando a las fases nuevas
+  coloresFase: ["#2E75D6", "#2CA02C", "#F2C500", "#8E44AD", "#D62728", "#17BECF",
+                "#E377C2", "#8C564B", "#FFB000", "#0B2E6B", "#00A087", "#7F3C8D"],
+  colorSinFase: "#BDBDBD",
+
+  // Logo del cajetín de los listados Excel (PNG en la raíz del repositorio)
+  logoListado: "logo.png",
+
+  // Grupos del proyecto de Trimble Connect que NO pueden usar la extensión (igual que Avance NABLA)
+  gruposBloqueados: ["EXTERNO"]
 };

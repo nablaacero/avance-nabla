@@ -1,40 +1,49 @@
-AVANCE NABLA - Extensión del visor 3D de Trimble Connect
-=========================================================
+PROGRAFAB - Extensión del visor 3D de Trimble Connect
+=====================================================
 
-Archivos (se suben TODOS, sueltos, a la raíz del repositorio):
-  index.html  app.js  logica.js  config.js  manifest.json  icono.png
-  ayuda.html  msal-browser.min.js  LEEME.txt
+Archivos (se suben TODOS, sueltos, a la raíz de un repositorio NUEVO llamado prografab):
+  index.html  app.js  logica.js  excel.js  config.js  manifest.json
+  icono.png  logo.png  ayuda.html  exceljs.min.js  LEEME.txt
+  (v1.1: si ya subiste la v1.0, sube todos de nuevo y BORRA xlsx.full.min.js, ya no se usa)
 
-1) PUBLICAR EN GITHUB PAGES (una sola vez)
-  a. github.com -> botón "+" (arriba a la derecha) -> New repository.
-     Repository name: avance-nabla   |  Public  |  Create repository.
-  b. En la página del repositorio: "uploading an existing file".
-     Arrastra todos los archivos de este zip (no la carpeta) -> Commit changes.
-  c. Settings -> Pages -> Source: "Deploy from a branch" -> Branch: main, carpeta / (root) -> Save.
-  d. Espera 1-2 minutos y abre:  https://nablaacero.github.io/avance-nabla/manifest.json
-     Si se ve el texto del manifiesto, está publicado.
+1) PUBLICAR EN GITHUB PAGES (igual que Avance NABLA, una sola vez)
+  a. github.com -> "+" -> New repository. Name: prografab | Public | Create repository.
+  b. "uploading an existing file" -> arrastra todos los archivos -> Commit changes.
+  c. Settings -> Pages -> Source: "Deploy from a branch" -> main, / (root) -> Save.
+  d. Espera 1-2 minutos y abre: https://nablaacero.github.io/prografab/manifest.json
 
-2) REGISTRAR EN TRIMBLE CONNECT (administrador del proyecto, una vez por proyecto)
-  a. Abre el proyecto en Trimble Connect desde el navegador (web.connect.trimble.com).
-  b. Configuración del proyecto -> Extensiones (en algunas versiones: "Apps & Capabilities" -> Add Custom).
-  c. Pega:  https://nablaacero.github.io/avance-nabla/manifest.json   -> Agregar -> actívala.
-  d. Abre el visor 3D: aparece el panel "Avance NABLA" en las extensiones del lado derecho.
+2) REGISTRAR EN TRIMBLE CONNECT (administrador del proyecto)
+  Configuración del proyecto -> Extensiones -> pega
+  https://nablaacero.github.io/prografab/manifest.json -> Agregar -> actívala.
 
-3) USO MIENTRAS TI HACE EL REGISTRO (modo CSV)
-  a. SharePoint -> lista "Avance de produccion" -> Exportar -> Exportar a CSV.
-  b. En el panel: Origen = "Archivo CSV", elige el archivo, revisa el número de proyecto
-     y presiona "Colorear avance".
+3) CARPETA DE LAS FASES
+  Crea en el proyecto la carpeta  5_FAB/5.3_LISTADOS/5.3.5-PROGRAMACION
+  (o cambia la ruta en config.js -> carpetaFases). Ahí se guarda PrograFAB_<proyecto>.json,
+  que es lo que comparte las fases entre usuarios. Si la carpeta no existe, las fases quedan
+  solo en el navegador de quien las hizo.
 
-4) CUANDO TI ENTREGUE EL ID DE APLICACIÓN (modo en línea)
-  a. En GitHub abre config.js -> lápiz (Edit) -> pega el Id. de aplicación en  clientId: "..."
-  b. Commit changes. Espera 1-2 minutos y recarga Trimble Connect.
-  c. En el panel: Origen = "Lista de SharePoint". La primera vez pide iniciar sesión de Microsoft
-     (si el navegador bloquea la ventana emergente, permítela para connect.trimble.com).
-     Se actualiza solo cada 5 minutos mientras el panel está abierto.
+USO
+  - Leer modelo -> chips de código (CL, VT, BC…): clic para seleccionar todos (varios a la vez).
+    "Solo ensambles que aún no tienen fase" evita mover lo ya programado.
+  - Marcas: CL8100, VT81*  ·  o selecciona a mano en el modelo (una pieza basta).
+  - Crea la fase, elígela y "Asignar selección". Luego "Guardar en Trimble Connect".
+  - Tabla de fases: ▶ selecciona · ◉ muestra solo · XLS listado · × borra (dos clics).
+  - Al guardar, primero se lee lo que otros guardaron y se combinan los cambios.
 
-COLORES: amarillo Armado · naranja Pintura · azul Despacho · verde Montaje · gris sin avance.
-Las piezas sin marca reconocida quedan en gris transparente. Los colores solo cambian la vista.
+LISTADO (XLS) — con logo (logo.png) y cajetín en cada hoja
+  Botón XLS de cada fase, "Listado de todas las fases (un Excel)" o "Listado de la selección".
+  1. Listado: columnas A a M del 2 ASM (marca, cantidad, piezas, pesos, áreas, rol).
+  2. Placas por espesor: resumen por espesor y detalle de cada marca de pieza:
+     fase, descripción, tipo (placa / patín recto / alma recta / acartelada), cantidad,
+     área, peso y en qué ensambles va (con cuántas piezas en cada uno).
+  3. Perfiles: igual, agrupado por perfil, con largo y metros lineales.
+  4. Metros lineales: resumen de compra (perfiles, patines y almas rectos en m lineales
+     por espesor x ancho, acartelados y otras placas).
+  5. Resumen marcas: fase, marca, cantidad y peso.
+  Una placa es "recta" si su área real = ancho x largo (tolerancia 1 %, config.js -> tolRecta).
+  Los roles de patín y alma están en config.js (rolesPatin, rolesAlma), tomados del
+  Catálogo de roles de Control_Listados_Ing_Detalle.xlsm.
+  Para cambiar el logo, reemplaza logo.png (mismo nombre).
 
-SI DICE "No encontré marcas": selecciona una pieza en el modelo, abre "Diagnóstico" en el panel,
-presiona "Ver propiedades de la selección" y envía una captura; la marca se configura en
-config.js -> propiedadesMarca.
+Las fases se identifican por el Handle de la pieza principal de Advance Steel, así que se
+conservan cuando se vuelve a exportar y subir el IFC.
