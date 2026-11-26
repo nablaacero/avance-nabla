@@ -1,529 +1,284 @@
-/* PrograFAB - extensión del visor 3D de Trimble Connect: fases de fabricación por ensamble */
+/* Avance NABLA - extensión del visor 3D de Trimble Connect */
 (function () {
   "use strict";
-  var C = window.CONFIG, L = window.LogicaPF;
-  var API = null, pid = "";
-  var modelo = null;          // { ins: [...], porRid: { "mid:id": i }, todosIds: [...] }
-  var datos = nuevoDatos();   // fases y asignaciones vigentes
-  var pend = nuevoPend();     // cambios locales aún no guardados en Trimble Connect
-  var chipsSel = {}, coloreado = false;
-  var tokTC = null, esperaTok = null, baseTC = null, carpetaId = null;
+  var C = window.CONFIG, L = window.Logica;
+  var API = null;
+  var tornillos = [];         // pernos / tuercas / arandelas del modelo
+  var indice = null;          // { marca: [ {modelId, id} ] }  (una entrada por pieza física / ensamble)
+  var filas = null;           // avance leído
+  var ultimo = null;          // resultado del último coloreado
+  var temporizador = null, ultimoArchivo = "", fechaAvance = null;
+  var tokTC = null, esperaTok = null, baseTC = null, todosIds = [];
+  var datosEnv = null, envSel = null, envSelUltimo = true;   // envíos leídos y envío resaltado
+  var COLOR_ENV_SEL = "#E8622C";
   var $ = function (id) { return document.getElementById(id); };
 
-  function nuevoDatos() { return { version: 1, fases: [], asign: {}, marcas: {}, actualizado: "" }; }
-  function nuevoPend() { return { asign: {}, fases: {} }; }
-  function hayPend() { return Object.keys(pend.asign).length + Object.keys(pend.fases).length > 0; }
-  function esc(t) { return String(t === undefined || t === null ? "" : t).replace(/[&<>"']/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]; }); }
-  function estado(txt, error) { var e = $("estado"); e.textContent = txt || ""; e.className = error ? "error" : ""; }
-  function ton(kg) { return (kg / 1000).toLocaleString("es-GT", { minimumFractionDigits: 1, maximumFractionDigits: 1 }); }
-  function leerLocal(k) { try { return localStorage.getItem("prografab:" + k); } catch (e) { return null; } }
-  function guardarLocal(k, v) { try { localStorage.setItem("prografab:" + k, v); } catch (e) {} }
-  function norm(t) { return String(t || "").trim().toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, ""); }
-  function hoy() { var d = new Date(); return d.getFullYear() + "-" + ("0" + (d.getMonth() + 1)).slice(-2) + "-" + ("0" + d.getDate()).slice(-2); }
+  function estado(txt, error) {
+    var e = $("estado"); if (!e) return; e.textContent = txt || ""; e.className = error ? "error" : "";
+  }
+  function ocupado(si) { if (!$("btnColorear")) return; $("btnColorear").disabled = si; $("btnReset").disabled = si; }
 
-  // ------------------------------------------------------------ conexión
+  // ------------------------------------------------------------ conexión con Trimble Connect
   async function conectar() {
     try {
-      API = await TrimbleConnectWorkspace.connect(window.parent, function (evento, d) {
-        if (evento === "viewer.onModelStateChanged" || evento === "viewer.onModelReset") { /* el índice se refresca con «Leer modelo» */ }
-        if (evento === "viewer.onSelectionChanged") contarSeleccion();
+      API = await TrimbleConnectWorkspace.connect(window.parent, function (evento, datos) {
+        if (evento === "viewer.onModelStateChanged" || evento === "viewer.onModelReset") indice = null;
         if (evento === "extension.accessToken") {
-          var t = d && d.data !== undefined ? d.data : d;
+          var t = datos && datos.data !== undefined ? datos.data : datos;
           if (t && t !== "pending" && t !== "denied") { tokTC = t; if (esperaTok) { esperaTok(t); esperaTok = null; } }
         }
       }, 30000);
       try {
         var p = await API.project.getProject();
-        pid = p && p.id || ""; nombreProy = String(p && p.name || "").replace(new RegExp(C.patronProyecto), "").replace(/^[\s\-–]+/, "").trim();
         var m = (p && p.name || "").match(new RegExp(C.patronProyecto));
-        $("proyecto").value = leerLocal("proyecto:" + pid) || (m ? m[1] : "");
-        $("alias").value = leerLocal("alias:" + pid) || "";
-      } catch (e) {}
-      cargarLocal();
-      pintarFases();
-      estado("Listo. Carga los modelos y presiona «Leer modelo».");
+        var guardado = leerLocal("proyecto:" + (p && p.id));
+        $("proyecto").value = guardado || (m ? m[1] : "");
+        $("proyecto").dataset.pid = p && p.id || "";
+        var ord = leerLocal("orden:" + (p && p.id));
+        if (ord) $("orden").value = ord;
+      } catch (e) { /* sin proyecto */ }
+      estado("Listo. Carga los modelos y presiona «Colorear avance».");
       if ((C.gruposBloqueados || []).length) verificarAcceso().catch(function () {});
     } catch (e) {
       estado("No se pudo conectar con Trimble Connect. Abre esta página desde el visor 3D.", true);
     }
   }
 
-  function cargarLocal() {
-    try { var d = JSON.parse(leerLocal("datos:" + pid) || "null"); if (d && d.fases) datos = d; } catch (e) {}
-    try { var p = JSON.parse(leerLocal("pend:" + pid) || "null"); if (p && p.asign) pend = p; } catch (e) {}
-  }
-  function guardarTodoLocal() {
-    guardarLocal("datos:" + pid, JSON.stringify(datos));
-    guardarLocal("pend:" + pid, JSON.stringify(pend));
-  }
+  function leerLocal(k) { try { return localStorage.getItem("avnabla:" + k); } catch (e) { return null; } }
+  function guardarLocal(k, v) { try { localStorage.setItem("avnabla:" + k, v); } catch (e) {} }
 
-  // ------------------------------------------------------------ índice: ensambles del modelo
+  // ------------------------------------------------------------ índice marca -> piezas del modelo
   async function indexar() {
     estado("Leyendo propiedades de los modelos cargados…");
     var modelos = await API.viewer.getObjects();
-    var todosIds = modelos.map(function (m) { return { modelId: m.modelId, objectRuntimeIds: (m.objects || []).map(function (o) { return o.id; }) }; });
-    var partes = {}, asm = [], total = 0;
+    todosIds = modelos.map(function (m) { return { modelId: m.modelId, objectRuntimeIds: (m.objects || []).map(function (o) { return o.id; }) }; });
+    var asm = {}, partes = {}, asmSin = [], marcaPieza = {}, pesoObj = {};
+    var total = 0; tornillos = [];
     for (var a = 0; a < modelos.length; a++) {
-      var mid = modelos[a].modelId, ids = (modelos[a].objects || []).map(function (o) { return o.id; });
+      var mid = modelos[a].modelId;
+      var ids = (modelos[a].objects || []).map(function (o) { return o.id; });
       for (var i = 0; i < ids.length; i += 1000) {
-        var props = await API.viewer.getObjectProperties(mid, ids.slice(i, i + 1000));
+        var lote = ids.slice(i, i + 1000);
+        var props = await API.viewer.getObjectProperties(mid, lote);
         props.forEach(function (o) {
-          if (/ASSEMBLY/i.test(String(o.class || ""))) { asm.push({ modelId: mid, id: o.id, nombre: o.product && o.product.name || o.name || "" }); return; }
-          var p = L.leerParte(o, C);
-          if (p) partes[mid + ":" + o.id] = p;
+          if (esTornillo(o)) { tornillos.push({ modelId: mid, id: o.id }); return; }
+          var pw = L.pesoDeObjeto(o, C.propiedadesPeso || []);
+          if (pw) pesoObj[mid + ":" + o.id] = pw;
+          var marca = L.marcaDeObjeto(o, C.propiedadesMarca);
+          var esAsm = String(o.class || "").toUpperCase().indexOf("ASSEMBLY") >= 0;
+          if (!marca) { if (esAsm) asmSin.push({ modelId: mid, id: o.id }); return; }
+          if (esAsm) (asm[marca] = asm[marca] || []).push({ modelId: mid, id: o.id });
+          else { (partes[marca] = partes[marca] || []).push({ modelId: mid, id: o.id }); marcaPieza[mid + ":" + o.id] = marca; }
         });
-        total += Math.min(1000, ids.length - i);
+        total += lote.length;
         estado("Leyendo propiedades… " + total + " objetos");
       }
     }
-    if (!asm.length) throw new Error("Los modelos cargados no traen ensambles (IfcElementAssembly). Revisa la exportación del IFC.");
-    var ins = [], porRid = {}, claves = {};
-    for (var u = 0; u < asm.length; u += 40) {
-      var lote = asm.slice(u, u + 40);
-      var hh = await Promise.all(lote.map(async function (x) {
+    // ensambles sin marca propia (ej. Advance Steel): la marca se toma de sus piezas
+    var cubiertas = {};
+    for (var u = 0; u < asmSin.length; u += 40) {
+      var lote0 = asmSin.slice(u, u + 40);
+      var hh = await Promise.all(lote0.map(async function (x) {
         try { return await API.viewer.getHierarchyChildren(x.modelId, [x.id], 4, true); } catch (e) { return []; }
       }));
-      lote.forEach(function (x, j) {
-        var hijos = (hh[j] || []).map(function (e) { return e.id; });
-        var ps = hijos.map(function (h) { return partes[x.modelId + ":" + h]; }).filter(Boolean);
-        var main = ps.filter(function (p) { return p.main; })[0] || ps[0];
-        var marca = String(x.nombre || (main && main.mpm) || "").trim().toUpperCase();
-        if (!marca) return;
-        var key = main && main.handle ? "H:" + main.handle : marca + "@" + x.modelId + ":" + x.id;
-        if (claves[key]) key += "#" + (++claves[key]); else claves[key] = 1;
-        var fab = ps.filter(function (p) { return L.tipoParte(p, C) !== "nofab"; });
-        var it = { key: key, marca: marca, pref: L.prefijo(marca), modelId: x.modelId, ids: [x.id].concat(hijos), partes: ps,
-                   kg: fab.reduce(function (s, p) { return s + p.peso; }, 0), pz: fab.length };
-        var k = ins.push(it) - 1;
-        it.ids.forEach(function (id) { porRid[x.modelId + ":" + id] = k; });
+      lote0.forEach(function (x, j) {
+        var ids = (hh[j] || []).map(function (e) { return e.id; });
+        var m = null;
+        for (var q = 0; q < ids.length && !m; q++) m = marcaPieza[x.modelId + ":" + ids[q]];
+        if (!m) return;
+        ids.forEach(function (i) { cubiertas[x.modelId + ":" + i] = 1; });
+        (asm[m] = asm[m] || []).push({ modelId: x.modelId, id: x.id, hijos: ids });
       });
-      estado("Agrupando piezas por ensamble… " + Math.min(u + 40, asm.length) + "/" + asm.length);
+      estado("Leyendo ensambles… " + Math.min(u + 40, asmSin.length) + "/" + asmSin.length);
     }
-    modelo = { ins: ins, porRid: porRid, todosIds: todosIds };
-    return modelo;
-  }
-
-  async function leerModelo() {
-    if (!API) return;
-    ocupado(true);
-    try {
-      await verificarAcceso();
-      guardarLocal("proyecto:" + pid, $("proyecto").value.trim());
-      guardarLocal("alias:" + pid, $("alias").value.trim());
-      await indexar();
-      var avisoTC = "";
-      try { await recargarTC(true); } catch (e) { avisoTC = " · " + (e.message || e); }
-      pintarChips(); pintarFases();
-      var conFase = modelo.ins.filter(function (x) { return datos.asign[x.key]; }).length;
-      estado(modelo.ins.length.toLocaleString("es-GT") + " ensambles en el modelo · " + conFase + " con fase." + avisoTC, !!avisoTC);
-    } catch (e) { estado(e.message || String(e), true); }
-    finally { ocupado(false); }
-  }
-  function ocupado(si) { ["btnLeer", "btnAsignar", "btnGuardarTC"].forEach(function (b) { $(b).disabled = si; }); }
-
-  // ------------------------------------------------------------ selección
-  function selector(lista) {
-    var por = {};
-    lista.forEach(function (x) {
-      var g = por[x.modelId] = por[x.modelId] || { modelId: x.modelId, objectRuntimeIds: [] };
-      Array.prototype.push.apply(g.objectRuntimeIds, x.ids);
+    Object.keys(partes).forEach(function (m) {
+      partes[m] = partes[m].filter(function (x) { return !cubiertas[x.modelId + ":" + x.id]; });
+      if (!partes[m].length) delete partes[m];
     });
-    return { modelObjectIds: Object.keys(por).map(function (k) { return por[k]; }) };
-  }
-
-  async function instanciasSeleccion() {
-    if (!modelo) throw new Error("Primero presiona «Leer modelo».");
-    var sel = await API.viewer.getSelection(), vistos = {}, out = [];
-    (sel || []).forEach(function (g) {
-      (g.objectRuntimeIds || []).forEach(function (id) {
-        var k = modelo.porRid[g.modelId + ":" + id];
-        if (k !== undefined && !vistos[k]) { vistos[k] = 1; out.push(modelo.ins[k]); }
+    // marcas con objeto ensamble: cada ensamble es una pieza física (se colorea con sus hijos)
+    var idx = {};
+    var listaAsm = [];
+    Object.keys(asm).forEach(function (m) {
+      asm[m].forEach(function (x) {
+        if (x.hijos) (idx[m] = idx[m] || []).push({ modelId: x.modelId, ids: [x.id].concat(x.hijos), asm: true });
+        else listaAsm.push({ m: m, x: x });
       });
     });
+    for (var t = 0; t < listaAsm.length; t += 40) {
+      var lote1 = listaAsm.slice(t, t + 40);
+      var hijos = await Promise.all(lote1.map(async function (it) {
+        try {
+          var h = await API.viewer.getHierarchyChildren(it.x.modelId, [it.x.id], 4, true);
+          return (h || []).map(function (e) { return e.id; });
+        } catch (e) { return null; }
+      }));
+      lote1.forEach(function (it, j) {
+        var inst = hijos[j] && hijos[j].length
+          ? { modelId: it.x.modelId, ids: [it.x.id].concat(hijos[j]), asm: true }
+          : { modelId: it.x.modelId, id: it.x.id, rec: true, asm: true };
+        (idx[it.m] = idx[it.m] || []).push(inst);
+      });
+      estado("Agrupando piezas por ensamble… " + Math.min(t + 40, listaAsm.length) + "/" + listaAsm.length);
+    }
+    // marcas que solo aparecen en las piezas: agrupar por ensamble padre
+    var soloPartes = Object.keys(partes).filter(function (m) { return !idx[m]; });
+    for (var s = 0; s < soloPartes.length; s++) {
+      var m = soloPartes[s], grupos = {};
+      for (var k = 0; k < partes[m].length; k += 40) {
+        var lote2 = partes[m].slice(k, k + 40);
+        var claves = await Promise.all(lote2.map(async function (x) {
+          try {
+            var padres = await API.viewer.getHierarchyParents(x.modelId, [x.id], 4, false);
+            if (padres && padres.length) return x.modelId + ":P" + padres[0].id;
+          } catch (e) {}
+          return x.modelId + ":" + x.id;
+        }));
+        lote2.forEach(function (x, j) {
+          (grupos[claves[j]] = grupos[claves[j]] || { modelId: x.modelId, ids: [] }).ids.push(x.id);
+        });
+      }
+      if (s % 20 === 0) estado("Agrupando piezas por ensamble… " + (s + 1) + "/" + soloPartes.length);
+      idx[m] = Object.keys(grupos).map(function (g) { return { modelId: grupos[g].modelId, ids: grupos[g].ids }; });
+    }
+    // peso de cada pieza física: el del ensamble; si no lo trae, la suma de sus piezas
+    Object.keys(idx).forEach(function (m) {
+      idx[m].forEach(function (inst) {
+        var ids = inst.ids || [inst.id];
+        var w = inst.asm ? (pesoObj[inst.modelId + ":" + ids[0]] || 0) : 0;
+        if (!w) for (var i = (inst.asm ? 1 : 0); i < ids.length; i++) w += pesoObj[inst.modelId + ":" + ids[i]] || 0;
+        if (!w && inst.id) w = pesoObj[inst.modelId + ":" + inst.id] || 0;
+        inst.peso = w;
+      });
+    });
+    // posición (centro de la caja envolvente) de cada pieza física, para ordenar el avance por dirección
+    try {
+      var porModelo = {};
+      Object.keys(idx).forEach(function (m) {
+        idx[m].forEach(function (inst) {
+          (porModelo[inst.modelId] = porModelo[inst.modelId] || []).push.apply(porModelo[inst.modelId], inst.ids || [inst.id]);
+        });
+      });
+      var centro = {};
+      var mods = Object.keys(porModelo);
+      for (var mm = 0; mm < mods.length; mm++) {
+        var lista = porModelo[mods[mm]];
+        for (var b = 0; b < lista.length; b += 1000) {
+          var cajas = await API.viewer.getObjectBoundingBoxes(mods[mm], lista.slice(b, b + 1000));
+          (cajas || []).forEach(function (c) {
+            var bx = c.boundingBox;
+            if (!bx || !bx.min || !bx.max || !isFinite(bx.min.x) || !isFinite(bx.max.x)) return;
+            centro[mods[mm] + ":" + c.id] = [(bx.min.x + bx.max.x) / 2, (bx.min.y + bx.max.y) / 2, (bx.min.z + bx.max.z) / 2];
+          });
+          estado("Leyendo posiciones… " + Math.min(b + 1000, lista.length) + "/" + lista.length);
+        }
+      }
+      Object.keys(idx).forEach(function (m) {
+        idx[m].forEach(function (inst) {
+          var s = [0, 0, 0], n = 0;
+          (inst.ids || [inst.id]).forEach(function (id) {
+            var c = centro[inst.modelId + ":" + id];
+            if (c) { s[0] += c[0]; s[1] += c[1]; s[2] += c[2]; n++; }
+          });
+          inst.c = n ? [s[0] / n, s[1] / n, s[2] / n] : null;
+        });
+      });
+    } catch (e) { /* sin posiciones: se usa el orden interno */ }
+    indice = idx;
+    return idx;
+  }
+
+  // ------------------------------------------------------------ lectura del avance
+  var msalApp = null;
+  async function tokenGraph() {
+    if (!C.clientId) throw new Error("Falta el clientId de Entra ID en config.js (lo da TI). Mientras tanto usa el modo CSV.");
+    if (!msalApp) {
+      msalApp = new msal.PublicClientApplication({
+        auth: { clientId: C.clientId, authority: "https://login.microsoftonline.com/" + C.tenantId, redirectUri: C.redirectUri },
+        cache: { cacheLocation: "localStorage" }
+      });
+      if (msalApp.initialize) await msalApp.initialize();
+    }
+    var pet = { scopes: ["Sites.Read.All"] };
+    var cuentas = msalApp.getAllAccounts();
+    if (cuentas.length) {
+      try { return (await msalApp.acquireTokenSilent(Object.assign({ account: cuentas[0] }, pet))).accessToken; } catch (e) {}
+    }
+    return (await msalApp.acquireTokenPopup(pet)).accessToken;
+  }
+
+  async function leerSharePoint() {
+    estado("Leyendo la lista de SharePoint…");
+    var tk = await tokenGraph();
+    var h = { Authorization: "Bearer " + tk };
+    var r = await fetch("https://graph.microsoft.com/v1.0/sites/" + C.sharepointHost + ":" + C.sitePath, { headers: h });
+    if (!r.ok) throw new Error("No se pudo abrir el sitio de SharePoint (" + r.status + ").");
+    var sitio = await r.json();
+    var f = C.campos;
+    var url = "https://graph.microsoft.com/v1.0/sites/" + sitio.id + "/lists/" + encodeURIComponent(C.listName) +
+      "/items?$top=999&$expand=fields($select=" + [f.marca, f.proyecto, f.etapa, f.cantidad, "Created"].join(",") + ")";
+    var out = [], maxF = 0;
+    while (url) {
+      var rr = await fetch(url, { headers: h });
+      if (!rr.ok) throw new Error("No se pudo leer la lista (" + rr.status + ").");
+      var j = await rr.json();
+      (j.value || []).forEach(function (it) {
+        var x = it.fields || {};
+        out.push({ marca: x[f.marca], proyecto: x[f.proyecto], etapa: x[f.etapa], cantidad: x[f.cantidad] });
+        var tf = Date.parse(x.Created || it.createdDateTime || 0); if (tf > maxF) maxF = tf;
+      });
+      url = j["@odata.nextLink"];
+    }
+    ultimoArchivo = "lista de SharePoint (último reporte)";
+    fechaAvance = maxF ? new Date(maxF) : null;
     return out;
   }
 
-  async function seleccionar(lista, texto) {
-    if (!lista.length) { await API.viewer.setSelection({ modelObjectIds: [] }, "set").catch(function () {}); $("txtSel").textContent = ""; return; }
-    await API.viewer.setSelection(selector(lista), "set");
-    $("txtSel").textContent = lista.length + " ensambles · " + ton(lista.reduce(function (s, x) { return s + x.kg; }, 0)) + " t";
-    if (texto) estado(texto);
-  }
-
-  var tContar = null;
-  function contarSeleccion() {
-    clearTimeout(tContar);
-    tContar = setTimeout(async function () {
-      if (!modelo) return;
-      try {
-        var l = await instanciasSeleccion();
-        $("txtSel").textContent = l.length ? l.length + " ensambles · " + ton(l.reduce(function (s, x) { return s + x.kg; }, 0)) + " t" : "";
-      } catch (e) {}
-    }, 300);
-  }
-
-  function filtroSinFase(l) { return $("soloSinFase").checked ? l.filter(function (x) { return !datos.asign[x.key]; }) : l; }
-
-  function pintarChips() {
-    if (!modelo) return;
-    var cuenta = {}, libres = {};
-    modelo.ins.forEach(function (x) { cuenta[x.pref] = (cuenta[x.pref] || 0) + 1; if (!datos.asign[x.key]) libres[x.pref] = (libres[x.pref] || 0) + 1; });
-    var prefs = Object.keys(cuenta).sort(function (a, b) { return cuenta[b] - cuenta[a] || (a < b ? -1 : 1); });
-    $("chips").innerHTML = prefs.map(function (p) {
-      return '<button class="chip' + (chipsSel[p] ? " act" : "") + '" data-p="' + esc(p) + '" title="' + (libres[p] || 0) + ' sin fase de ' + cuenta[p] + '">' +
-        esc(p) + "<span>" + (libres[p] || 0) + "/" + cuenta[p] + "</span></button>";
-    }).join("") + '<button class="chip todo" data-p="*">Ninguno</button>';
-  }
-
-  async function aplicarChips() {
-    var activos = Object.keys(chipsSel).filter(function (k) { return chipsSel[k]; });
-    var l = filtroSinFase(modelo.ins.filter(function (x) { return chipsSel[x.pref]; }));
-    await seleccionar(l, activos.length ? "Seleccionados por código: " + activos.join(", ") : "");
-  }
-
-  function patronMarcas(txt) {
-    var partes = String(txt || "").split(/[,;\s]+/).map(function (s) { return s.trim().toUpperCase(); }).filter(Boolean);
-    if (!partes.length) return null;
-    return new RegExp("^(" + partes.map(function (p) { return p.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*"); }).join("|") + ")$");
-  }
-
-  // ------------------------------------------------------------ fases
-  function fase(id) { return datos.fases.filter(function (f) { return f.id === id; })[0]; }
-  function marcarCambio() { datos.actualizado = new Date().toISOString(); guardarTodoLocal(); pintarFases(); pintarChips(); if (coloreado) colorear(); }
-
-  function crearFase() {
-    var n = $("nuevaFase").value.trim() || ("Fase " + (datos.fases.length + 1));
-    if (datos.fases.some(function (f) { return norm(f.nombre) === norm(n); })) { estado("Ya existe una fase con ese nombre.", true); return; }
-    var f = { id: "f" + Date.now().toString(36) + Math.random().toString(36).slice(2, 5), nombre: n,
-              color: C.coloresFase[datos.fases.length % C.coloresFase.length], creada: new Date().toISOString() };
-    datos.fases.push(f); pend.fases[f.id] = f;
-    $("nuevaFase").value = "";
-    guardarLocal("activa:" + pid, f.id);
-    marcarCambio();
-    estado("Fase «" + n + "» creada. Selecciona ensambles y presiona «Asignar selección».");
-  }
-
-  async function asignar(quitar) {
-    try {
-      var fid = $("faseActiva").value;
-      if (!quitar && !fid) { estado("Crea una fase primero.", true); return; }
-      var l = await instanciasSeleccion();
-      if (!l.length) { estado("No hay ensambles seleccionados en el modelo.", true); return; }
-      var cambio = 0, otra = 0;
-      l.forEach(function (x) {
-        var antes = datos.asign[x.key] || "";
-        var nuevo = quitar ? "" : fid;
-        if (antes === nuevo) return;
-        if (antes && !quitar) otra++;
-        if (nuevo) datos.asign[x.key] = nuevo; else delete datos.asign[x.key];
-        datos.marcas[x.key] = x.marca;
-        pend.asign[x.key] = nuevo;
-        cambio++;
-      });
-      chipsSel = {};
-      marcarCambio();
-      var kg = l.reduce(function (s, x) { return s + x.kg; }, 0);
-      estado(quitar ? cambio + " ensambles quedaron sin fase."
-        : cambio + " ensambles asignados a «" + fase(fid).nombre + "» (" + ton(kg) + " t)" + (otra ? " · " + otra + " se movieron de otra fase" : "") + ". Falta «Guardar en Trimble Connect».");
-    } catch (e) { estado(e.message || String(e), true); }
-  }
-
-  function instFase(fid) { return modelo ? modelo.ins.filter(function (x) { return (datos.asign[x.key] || "") === fid; }) : []; }
-
-  function pintarFases() {
-    var act = leerLocal("activa:" + pid) || $("faseActiva").value;
-    $("faseActiva").innerHTML = datos.fases.length
-      ? datos.fases.map(function (f) { return '<option value="' + f.id + '">' + esc(f.nombre) + "</option>"; }).join("")
-      : '<option value="">(crea una fase)</option>';
-    if (act && fase(act)) $("faseActiva").value = act;
-    var tot = { e: 0, p: 0, k: 0 };
-    var fila = function (f, l, sinFase) {
-      var e = l.length, p = l.reduce(function (s, x) { return s + x.pz; }, 0), k = l.reduce(function (s, x) { return s + x.kg; }, 0);
-      tot.e += e; tot.p += p; tot.k += k;
-      var id = sinFase ? "" : f.id;
-      var acc = (e ? '<button class="ico txt" data-sel="' + id + '" title="Seleccionar en el modelo">▶</button>' +
-                     '<button class="ico txt" data-solo="' + id + '" title="Mostrar solo esta fase">◉</button>' +
-                     '<button class="ico txt" data-xls="' + id + '" title="Listado en Excel">XLS</button>' : "") +
-                (sinFase ? "" : '<button class="ico txt" data-borrar="' + id + '" title="Borrar la fase">×</button>');
-      var nom = sinFase ? '<span class="sw" style="background:' + C.colorSinFase + '"></span> Sin fase'
-        : '<input type="color" value="' + f.color + '" data-color="' + id + '"> ' + '<span data-ren="' + id + '">' + esc(f.nombre) + "</span>";
-      return "<tr" + (!sinFase && id === $("faseActiva").value ? ' class="act"' : "") + '><td class="nom">' + nom + '</td><td class="num">' + (modelo ? e : "") +
-        '</td><td class="num">' + (modelo ? p.toLocaleString("es-GT") : "") + '</td><td class="num">' + (modelo ? ton(k) : "") + '</td><td class="accs">' + acc + "</td></tr>";
-    };
-    var html = datos.fases.map(function (f) { return fila(f, instFase(f.id), false); }).join("");
-    if (modelo) {
-      html += fila(null, instFase(""), true);
-      html += '<tr class="tot"><td>Total en modelo</td><td class="num">' + tot.e + '</td><td class="num">' + tot.p.toLocaleString("es-GT") + '</td><td class="num">' + ton(tot.k) + "</td><td></td></tr>";
-    }
-    $("cuerpoFases").innerHTML = html || '<tr><td colspan="5" class="ayuda">Sin fases todavía.</td></tr>';
-    // asignaciones que no están en el modelo cargado
-    var aviso = "";
-    if (modelo) {
-      var enModelo = {}; modelo.ins.forEach(function (x) { enModelo[x.key] = 1; });
-      var fuera = Object.keys(datos.asign).filter(function (k) { return !enModelo[k]; });
-      if (fuera.length) {
-        var ms = fuera.map(function (k) { return datos.marcas[k] || k; });
-        aviso = '<div class="aviso">' + fuera.length + " ensambles con fase no están en los modelos cargados (otro modelo, o se borraron/renumeraron): " +
-          esc(ms.slice(0, 30).join(", ")) + (ms.length > 30 ? "…" : "") + "</div>";
-      }
-    }
-    $("avisoFases").innerHTML = aviso;
-    $("txtGuardado").innerHTML = hayPend() ? '<span class="pend">cambios sin guardar</span>'
-      : (datos.guardadoTC ? '<span class="ok">guardado ' + new Date(datos.guardadoTC).toLocaleString("es-GT", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }) + "</span>" : "");
-  }
-
-  function borrarFase(id) {
-    var f = fase(id); if (!f) return;
-    var n = instFase(id).length || Object.keys(datos.asign).filter(function (k) { return datos.asign[k] === id; }).length;
-    if (n && !confirmarBorrar(id)) return;
-    datos.fases = datos.fases.filter(function (x) { return x.id !== id; });
-    Object.keys(datos.asign).forEach(function (k) { if (datos.asign[k] === id) { delete datos.asign[k]; pend.asign[k] = ""; } });
-    pend.fases[id] = null;
-    marcarCambio();
-    estado("Fase «" + f.nombre + "» borrada" + (n ? "; " + n + " ensambles quedaron sin fase." : "."));
-  }
-  // se pide un segundo clic en lugar de un cuadro de confirmación (los diálogos bloquean el visor)
-  var porBorrar = null;
-  function confirmarBorrar(id) {
-    if (porBorrar === id) { porBorrar = null; return true; }
-    porBorrar = id; estado("La fase tiene ensambles asignados. Presiona × otra vez para borrarla.", true);
-    setTimeout(function () { if (porBorrar === id) porBorrar = null; }, 6000);
-    return false;
-  }
-
-  function renombrar(span) {
-    var id = span.dataset.ren, f = fase(id); if (!f) return;
-    var inp = document.createElement("input");
-    inp.type = "text"; inp.value = f.nombre; inp.style.width = "110px"; inp.style.padding = "2px 4px";
-    span.replaceWith(inp); inp.focus(); inp.select();
-    var listo = false;
-    var fin = function (ok) {
-      if (listo) return; listo = true;
-      var v = inp.value.trim();
-      if (ok && v && v !== f.nombre) { f.nombre = v; pend.fases[id] = f; marcarCambio(); } else pintarFases();
-    };
-    inp.addEventListener("keydown", function (e) { if (e.key === "Enter") fin(true); if (e.key === "Escape") fin(false); });
-    inp.addEventListener("blur", function () { fin(true); });
-  }
-
-  // ------------------------------------------------------------ colores y vista
-  async function colorear() {
-    if (!modelo) { estado("Primero presiona «Leer modelo».", true); return; }
-    try {
-      await API.viewer.setObjectState(undefined, { color: "reset" });
-      await API.viewer.setObjectState(undefined, { color: { r: 225, g: 225, b: 225, a: 70 } });
-      var sin = instFase("");
-      if (sin.length) await API.viewer.setObjectState(selector(sin), { color: rgba(C.colorSinFase) });
-      for (var i = 0; i < datos.fases.length; i++) {
-        var l = instFase(datos.fases[i].id);
-        if (l.length) await API.viewer.setObjectState(selector(l), { color: rgba(datos.fases[i].color) });
-      }
-      coloreado = true;
-    } catch (e) { estado("No se pudo colorear: " + (e.message || e), true); }
-  }
-  function rgba(hex) { var h = String(hex).replace("#", ""); return { r: parseInt(h.slice(0, 2), 16), g: parseInt(h.slice(2, 4), 16), b: parseInt(h.slice(4, 6), 16), a: 255 }; }
-
-  async function quitarColores() {
-    coloreado = false;
-    try { await API.viewer.setObjectState(undefined, { color: "reset", visible: "reset" }); estado("Colores restablecidos."); } catch (e) {}
-  }
-
-  async function mostrarSolo(lista, nombre) {
-    var sel = selector(lista), ok = false;
-    try {
-      ok = await API.viewer.isolateEntities(sel.modelObjectIds.map(function (g) { return { modelId: g.modelId, entityIds: g.objectRuntimeIds }; }));
-    } catch (e) { ok = false; }
-    if (ok === false) {
-      var ver = {};
-      sel.modelObjectIds.forEach(function (g) { g.objectRuntimeIds.forEach(function (id) { ver[g.modelId + ":" + id] = 1; }); });
-      var ocultar = modelo.todosIds.map(function (g) {
-        return { modelId: g.modelId, objectRuntimeIds: g.objectRuntimeIds.filter(function (id) { return !ver[g.modelId + ":" + id]; }) };
-      }).filter(function (g) { return g.objectRuntimeIds.length; });
-      if (ocultar.length) await API.viewer.setObjectState({ modelObjectIds: ocultar }, { visible: false });
-      await API.viewer.setObjectState(sel, { visible: true });
-    }
-    await API.viewer.setCamera(sel, { animationTime: 400 }).catch(function () {});
-    estado("Mostrando solo " + nombre + " · " + lista.length + " ensambles. «Quitar colores» vuelve a mostrar todo.");
-  }
-
-  // ------------------------------------------------------------ listados Excel (ExcelJS: logo y formato)
-  var logoBuf = null, nombreProy = "";
-  async function logo() {
-    if (logoBuf) return logoBuf;
-    try { var r = await fetch(C.logoListado || "logo.png"); if (r.ok) logoBuf = await r.arrayBuffer(); } catch (e) {}
-    return logoBuf;
-  }
-
-  // porFase: [{ fase, instancias }]
-  async function exportar(porFase, titulo) {
-    porFase = porFase.filter(function (p) { return p.instancias.length; });
-    if (!porFase.length) { estado("No hay ensambles para el listado.", true); return; }
-    try {
-      estado("Generando el listado…");
-      var proy = $("proyecto").value.trim(), alias = $("alias").value.trim();
-      var quien = "";
-      try { if (baseTC) { var yo = await tc("/users/me"); quien = ((yo.firstName || "") + " " + (yo.lastName || "")).trim(); } } catch (e) {}
-      var meta = { proy: proy, proyNum: isNaN(+proy) ? proy : +proy, nombreProy: nombreProy, alias: alias, fase: titulo, fecha: hoy(), por: quien };
-      var wb = ExcelPF.construirLibro(ExcelJS, L, C, porFase, meta, await logo());
-      var buf = await wb.xlsx.writeBuffer();
-      var nombre = ("PrograFAB_" + proy + "_" + alias + "_" + titulo + "_" + hoy())
-        .replace(/[\\/:*?"<>|]+/g, "-").replace(/_+/g, "_").replace(/\s+/g, " ") + ".xlsx";
-      descargar(new Blob([buf], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }), nombre);
-      var n = porFase.reduce(function (s, p) { return s + p.instancias.length; }, 0);
-      if ($("subirListados").checked) {
-        estado("Guardando " + nombre + " en Trimble Connect…");
-        await subirTC(nombre, buf);
-        estado("Listado «" + nombre + "» descargado y guardado en " + C.carpetaFases + ".");
-      } else estado("Listado «" + nombre + "» descargado (" + n + " ensambles).");
-    } catch (e) { estado("No se pudo generar el listado: " + (e.message || e), true); }
-  }
-  function exportarFase(id) { exportar([{ fase: id ? fase(id).nombre : "Sin fase", instancias: instFase(id) }], id ? fase(id).nombre : "Sin fase"); }
-  function exportarTodas() {
-    if (!modelo) { estado("Primero presiona «Leer modelo».", true); return; }
-    exportar(datos.fases.map(function (f) { return { fase: f.nombre, instancias: instFase(f.id) }; }), "Todas las fases");
-  }
-
-  function descargar(blob, nombre) {
-    var a = document.createElement("a");
-    a.href = URL.createObjectURL(blob); a.download = nombre;
-    document.body.appendChild(a); a.click();
-    setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 2000);
-  }
-
-  // ------------------------------------------------------------ Trimble Connect: archivos
+  // ---------- archivo dentro del proyecto de Trimble Connect
   async function tokenTC() {
     if (tokTC) return tokTC;
     var t = await API.extension.requestPermission("accesstoken");
     if (t && t !== "pending" && t !== "denied") { tokTC = t; return t; }
-    if (t === "denied") throw new Error("Trimble Connect no dio permiso a la extensión.");
+    if (t === "denied") throw new Error("Trimble Connect no dio permiso a la extensión. Acepta el acceso e inténtalo de nuevo.");
     estado("Acepta el permiso que muestra Trimble Connect…");
     return await new Promise(function (ok, mal) {
       esperaTok = ok;
-      setTimeout(function () { mal(new Error("Acepta el permiso de acceso de Trimble Connect y vuelve a intentar.")); }, 90000);
+      setTimeout(function () { mal(new Error("Acepta el permiso de acceso de Trimble Connect y vuelve a presionar «Colorear avance».")); }, 90000);
     });
   }
-  async function tc(ruta, opc) {
-    var tk = await tokenTC();
-    opc = opc || {};
-    opc.headers = Object.assign({ Authorization: "Bearer " + tk }, opc.headers || {});
-    var r = await fetch(baseTC + ruta, opc);
-    if (r.status === 401) { tokTC = null; throw new Error("La sesión de Trimble Connect venció; vuelve a intentar."); }
-    if (!r.ok) { var t = ""; try { t = await r.text(); } catch (e) {} var er = new Error("Trimble Connect respondió " + r.status + " en " + ruta); er.status = r.status; er.cuerpo = t; throw er; }
-    var ct = r.headers.get("content-type") || "";
-    return /json/.test(ct) ? r.json() : r.text();
+
+  async function tc(ruta, tk) {
+    var r = await fetch(baseTC + ruta, { headers: { Authorization: "Bearer " + tk } });
+    if (r.status === 401) { tokTC = null; throw new Error("La sesión de Trimble Connect venció; vuelve a presionar «Colorear avance»."); }
+    if (!r.ok) throw new Error("Trimble Connect respondió " + r.status + " en " + ruta);
+    return r.json();
   }
-  async function asegurarBase() {
-    if (baseTC) return;
-    var tk = await tokenTC();
+
+  // encuentra la región del proyecto (una sola vez) y devuelve los datos del proyecto
+  async function asegurarBase(tk, pid) {
+    if (baseTC) return await tc("/projects/" + pid, tk);
+    var info = null;
     var bases = ["https://app.connect.trimble.com", "https://app21.connect.trimble.com", "https://app22.connect.trimble.com",
                  "https://app31.connect.trimble.com", "https://app32.connect.trimble.com"];
-    for (var b = 0; b < bases.length && !baseTC; b++) {
-      try { var rr = await fetch(bases[b] + "/tc/api/2.0/projects/" + pid, { headers: { Authorization: "Bearer " + tk } }); if (rr.ok) baseTC = bases[b] + "/tc/api/2.0"; } catch (e) {}
+    for (var b = 0; b < bases.length && !info; b++) {
+      try {
+        var rr = await fetch(bases[b] + "/tc/api/2.0/projects/" + pid, { headers: { Authorization: "Bearer " + tk } });
+        if (rr.ok) { info = await rr.json(); baseTC = bases[b] + "/tc/api/2.0"; }
+      } catch (e) {}
     }
-    if (!baseTC) throw new Error("No pude abrir el proyecto con la API de Trimble Connect.");
-  }
-  async function carpetaFases() {
-    if (carpetaId) return carpetaId;
-    await asegurarBase();
-    var info = await tc("/projects/" + pid);
-    var c = info.rootId, partes = C.carpetaFases.split("/").filter(Boolean);
-    for (var i = 0; i < partes.length; i++) {
-      var items = await tc("/folders/" + c + "/items");
-      var f = (items || []).filter(function (x) { return String(x.type).toUpperCase() === "FOLDER" && norm(x.name) === norm(partes[i]); })[0];
-      if (!f) throw new Error("No existe la carpeta «" + C.carpetaFases + "» en Trimble Connect: créala para compartir las fases (por ahora quedan solo en este navegador).");
-      c = f.id;
-    }
-    return (carpetaId = c);
-  }
-  function nombreArchivoFases() { return C.archivoFases.replace("{proy}", $("proyecto").value.trim() || "proyecto"); }
-
-  async function archivosFases() {
-    var c = await carpetaFases();
-    var base = nombreArchivoFases().replace(/\.json$/i, "");
-    var fecha = function (x) { return Date.parse(x.modifiedOn || x.modified || x.createdOn || 0) || 0; };
-    return ((await tc("/folders/" + c + "/items")) || []).filter(function (x) {
-      return String(x.type).toUpperCase() === "FILE" && norm(x.name).indexOf(norm(base)) === 0 && /\.json$/i.test(x.name);
-    }).sort(function (a, b) { return fecha(b) - fecha(a); });
+    if (!info) throw new Error("No pude abrir el proyecto con la API de Trimble Connect.");
+    return info;
   }
 
-  async function leerTC() {
-    var arch = await archivosFases();
-    if (!arch.length) return null;
-    var du = await tc("/files/fs/" + arch[0].id + "/downloadurl");
-    var resp = await fetch(du.url || du.downloadUrl || du);
-    if (!resp.ok) throw new Error("No se pudo descargar " + arch[0].name);
-    var d = JSON.parse(await resp.text());
-    d.archivo = arch[0].name;
-    return d;
-  }
-
-  // subida en 3 pasos de la API 2.0: initiate -> PUT al uploadURL -> commit
-  async function subirTC(nombre, contenido) {
-    var c = await carpetaFases();
-    var ini = await tc("/files/fs/initiate", { method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name: nombre, parentId: c, parentType: "FOLDER" }) });
-    var url = ini.uploadURL || ini.uploadUrl || (ini.contents && ini.contents[0] && ini.contents[0].url);
-    if (!url || !ini.uploadId) throw new Error("Trimble Connect no devolvió la dirección de subida.");
-    var put = await fetch(url, { method: "PUT", body: contenido });
-    if (!put.ok) throw new Error("Falló la subida del archivo (" + put.status + ").");
-    return await tc("/files/fs/commit", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ uploadId: ini.uploadId }) });
-  }
-
-  // combina lo guardado en Trimble Connect con los cambios locales pendientes
-  function combinar(remoto) {
-    var d = remoto ? JSON.parse(JSON.stringify(remoto)) : nuevoDatos();
-    d.fases = d.fases || []; d.asign = d.asign || {}; d.marcas = d.marcas || {};
-    Object.keys(pend.fases).forEach(function (id) {
-      var f = pend.fases[id];
-      d.fases = d.fases.filter(function (x) { return x.id !== id; });
-      if (f) d.fases.push(f);
-    });
-    d.fases.sort(function (a, b) { return String(a.creada || "") < String(b.creada || "") ? -1 : 1; });
-    Object.keys(pend.asign).forEach(function (k) {
-      if (pend.asign[k]) { d.asign[k] = pend.asign[k]; d.marcas[k] = datos.marcas[k] || d.marcas[k]; } else delete d.asign[k];
-    });
-    var vivas = {}; d.fases.forEach(function (f) { vivas[f.id] = 1; });
-    Object.keys(d.asign).forEach(function (k) { if (!vivas[d.asign[k]]) delete d.asign[k]; });
-    return d;
-  }
-
-  async function recargarTC(silencio) {
-    var r = await leerTC();
-    if (!r) { if (!silencio) estado("Aún no hay fases guardadas en " + C.carpetaFases + "."); return; }
-    var g = datos.guardadoTC;
-    datos = combinar(r);
-    datos.guardadoTC = r.actualizado || g;
-    guardarTodoLocal(); pintarFases(); pintarChips();
-    if (coloreado) colorear();
-    if (!silencio) estado("Fases leídas de " + r.archivo + (hayPend() ? " (se conservan tus cambios sin guardar)." : "."));
-  }
-
-  async function guardarTC() {
-    $("btnGuardarTC").disabled = true;
-    try {
-      estado("Leyendo la versión guardada para no pisar cambios de otros…");
-      var r = null; try { r = await leerTC(); } catch (e) { if (/No existe la carpeta/.test(e.message)) throw e; }
-      var d = combinar(r);
-      var quien = "";
-      try { var yo = await tc("/users/me"); quien = (yo.firstName || "") + " " + (yo.lastName || ""); } catch (e) {}
-      d.actualizado = new Date().toISOString(); d.por = quien.trim(); d.proyecto = $("proyecto").value.trim();
-      d.alias = $("alias").value.trim(); d.version = 1;
-      delete d.archivo; delete d.guardadoTC;
-      await subirTC(nombreArchivoFases(), new Blob([JSON.stringify(d, null, 1)], { type: "application/json" }));
-      datos = d; datos.guardadoTC = d.actualizado; pend = nuevoPend();
-      guardarTodoLocal(); pintarFases(); pintarChips();
-      estado("Fases guardadas en " + C.carpetaFases + "/" + nombreArchivoFases() + ".");
-    } catch (e) {
-      estado((e.message || String(e)) + " — Puedes usar «Respaldo manual» para descargar el .json.", true);
-    } finally { $("btnGuardarTC").disabled = false; }
-  }
-
-  // ------------------------------------------------------------ control de acceso por grupo (igual que Avance NABLA)
+  // ---------- control de acceso por grupo del proyecto (ej. EXTERNO)
   var acceso = null, diagAcceso = "";
   function lista(x) { return Array.isArray(x) ? x : (x && (x.items || x.data || x.users || x.members)) || []; }
-  async function intentar(rutas) {
+  async function intentar(tk, rutas) {
     for (var i = 0; i < rutas.length; i++) {
-      try { var r = await tc(rutas[i]); diagAcceso += "\n  OK " + rutas[i]; return r; } catch (e) { diagAcceso += "\n  " + (e.status || "error") + " " + rutas[i]; }
+      try {
+        var r = await fetch(baseTC + rutas[i], { headers: { Authorization: "Bearer " + tk } });
+        if (r.ok) { diagAcceso += "\n  OK " + rutas[i]; return await r.json(); }
+        diagAcceso += "\n  " + r.status + " " + rutas[i];
+      } catch (e) { diagAcceso += "\n  error " + rutas[i]; }
     }
     return null;
   }
@@ -532,24 +287,538 @@
     if (!bloq.length || acceso === true) return;
     if (acceso === false) throw new Error("Sin acceso");
     diagAcceso = "Control de acceso (grupos bloqueados: " + C.gruposBloqueados.join(", ") + ")";
-    try { await asegurarBase(); } catch (e) { diagAcceso += "\n  → no se pudo verificar; se permite"; acceso = true; return; }
-    var yo = await intentar(["/users/me"]);
-    var grupos = lista(await intentar(["/groups?projectId=" + pid, "/projects/" + pid + "/groups"]));
-    if (!yo || !grupos.length) { diagAcceso += "\n  → no se pudo verificar; se permite"; acceso = true; return; }
+    var tk, proy;
+    try { tk = await tokenTC(); proy = await API.project.getProject(); await asegurarBase(tk, proy.id); }
+    catch (e) { diagAcceso += "\n  → no se pudo verificar (" + (e.message || e) + "); se permite el acceso"; acceso = true; return; }
+    var yo = await intentar(tk, ["/users/me"]);
+    var grupos = lista(await intentar(tk, ["/groups?projectId=" + proy.id, "/projects/" + proy.id + "/groups"]));
+    if (!yo || !grupos.length) { diagAcceso += "\n  → no se pudo verificar; se permite el acceso"; acceso = true; return; }
     var miIds = [yo.id, yo.tiduuid, yo.uuid].filter(Boolean), miMail = String(yo.email || "").toLowerCase();
-    var esMiembro = function (u) { return miIds.indexOf(u.id) >= 0 || miIds.indexOf(u.tiduuid) >= 0 || miIds.indexOf(u.userId) >= 0 || (miMail && String(u.email || "").toLowerCase() === miMail); };
+    var esMiembro = function (u) {
+      return miIds.indexOf(u.id) >= 0 || miIds.indexOf(u.tiduuid) >= 0 || miIds.indexOf(u.userId) >= 0 ||
+        (miMail && String(u.email || "").toLowerCase() === miMail);
+    };
     acceso = true;
     for (var g = 0; g < grupos.length && acceso; g++) {
       if (bloq.indexOf(norm(grupos[g].name)) < 0) continue;
       var miembros = lista(grupos[g].users || grupos[g].members);
-      if (!miembros.length) miembros = lista(await intentar(["/groups/" + grupos[g].id + "/users", "/groups/" + grupos[g].id + "/members"]));
+      if (!miembros.length) miembros = lista(await intentar(tk, ["/groups/" + grupos[g].id + "/users", "/groups/" + grupos[g].id + "/members"]));
+      diagAcceso += "\n  grupo " + grupos[g].name + ": " + miembros.length + " miembros";
       if (miembros.some(esMiembro)) acceso = false;
     }
+    diagAcceso += "\n  → " + (acceso ? "acceso permitido" : "acceso BLOQUEADO");
     if (!acceso) {
-      document.body.innerHTML = '<div style="font-family:Segoe UI,Arial,sans-serif;padding:24px;color:#14325f"><h3 style="margin:0 0 8px">PrograFAB</h3>' +
+      document.body.innerHTML = '<div style="font-family:Segoe UI,Arial,sans-serif;padding:24px;color:#14325f">' +
+        '<h3 style="margin:0 0 8px">Avance de producción</h3>' +
         '<p style="font-size:13px;color:#4b5563">Esta herramienta es de uso interno de NABLA Acero y no está disponible para tu usuario.</p></div>';
       throw new Error("Sin acceso");
     }
+  }
+
+  async function leerTrimble() {
+    estado("Buscando el archivo en " + C.carpetaProduccion + "…");
+    var tk = await tokenTC();
+    var proy = await API.project.getProject();
+    var info = null;
+    if (!baseTC) {
+      var bases = ["https://app.connect.trimble.com", "https://app21.connect.trimble.com", "https://app22.connect.trimble.com",
+                   "https://app31.connect.trimble.com", "https://app32.connect.trimble.com"];
+      for (var b = 0; b < bases.length && !info; b++) {
+        try {
+          var rr = await fetch(bases[b] + "/tc/api/2.0/projects/" + proy.id, { headers: { Authorization: "Bearer " + tk } });
+          if (rr.ok) { info = await rr.json(); baseTC = bases[b] + "/tc/api/2.0"; }
+        } catch (e) {}
+      }
+      if (!info) throw new Error("No pude abrir el proyecto con la API de Trimble Connect.");
+    } else info = await tc("/projects/" + proy.id, tk);
+    var carpeta = info.rootId;
+    var partes = C.carpetaProduccion.split("/").filter(Boolean);
+    for (var i = 0; i < partes.length; i++) {
+      var items = await tc("/folders/" + carpeta + "/items", tk);
+      var f = (items || []).filter(function (x) {
+        return String(x.type).toUpperCase() === "FOLDER" && norm(x.name) === norm(partes[i]);
+      })[0];
+      if (!f) throw new Error("No encontré la carpeta «" + partes[i] + "» en Trimble Connect.");
+      carpeta = f.id;
+    }
+    var arch = (await tc("/folders/" + carpeta + "/items", tk) || []).filter(function (x) {
+      return String(x.type).toUpperCase() === "FILE" && /\.(xlsx|xlsm|xls|csv)$/i.test(x.name || "");
+    });
+    if (!arch.length) throw new Error("La carpeta " + C.carpetaProduccion + " no tiene archivos .xlsx o .csv.");
+    var fecha = function (x) { return Date.parse(x.modifiedOn || x.modified || x.createdOn || 0) || 0; };
+    arch.sort(function (x, y) { return fecha(y) - fecha(x); });
+    var a = arch[0];
+    estado("Leyendo " + a.name + "…");
+    var du = await tc("/files/fs/" + a.id + "/downloadurl", tk);
+    var url = du.url || du.downloadUrl || du;
+    var resp = await fetch(url);
+    if (!resp.ok) throw new Error("No se pudo descargar " + a.name + " (" + resp.status + ").");
+    var buf = await resp.arrayBuffer();
+    var filas = convertir(buf, a.name);
+    ultimoArchivo = a.name;
+    fechaAvance = fecha(a) ? new Date(fecha(a)) : null;
+    return filas;
+  }
+
+  function norm(t) { return String(t || "").trim().toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, ""); }
+
+  // contenido (ArrayBuffer) de un .csv o .xlsx -> filas de avance
+  function convertir(buf, nombre) {
+    if (/\.csv$/i.test(nombre)) return L.leerCSV(new TextDecoder("utf-8").decode(buf));
+    var wb = XLSX.read(new Uint8Array(buf), { type: "array" });
+    var error = null;
+    for (var s = 0; s < wb.SheetNames.length; s++) {
+      var m = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[s]], { header: 1, raw: true, defval: "" });
+      try { return L.leerTabla(m); } catch (e) { error = e; }
+    }
+    throw error || new Error("El archivo no tiene hojas.");
+  }
+
+  function leerArchivo() {
+    return new Promise(function (ok, mal) {
+      var fi = $("archivo").files[0];
+      if (!fi) return mal(new Error("Elige el archivo CSV exportado de la lista."));
+      var rd = new FileReader();
+      rd.onload = function () {
+        try { ultimoArchivo = fi.name; fechaAvance = fi.lastModified ? new Date(fi.lastModified) : null; ok(convertir(rd.result, fi.name)); }
+        catch (e) { mal(e); }
+      };
+      rd.onerror = function () { mal(new Error("No se pudo leer el archivo.")); };
+      rd.readAsArrayBuffer(fi);
+    });
+  }
+
+  // ------------------------------------------------------------ coloreado
+  function selector(lista) {
+    var porModelo = {};
+    lista.forEach(function (x) {
+      var k = x.modelId + (x.rec ? "|r" : "");
+      var g = porModelo[k] = porModelo[k] || { modelId: x.modelId, objectRuntimeIds: [], recursive: !!x.rec };
+      if (x.ids) Array.prototype.push.apply(g.objectRuntimeIds, x.ids); else g.objectRuntimeIds.push(x.id);
+    });
+    return { modelObjectIds: Object.keys(porModelo).map(function (k) { return porModelo[k]; }) };
+  }
+
+  function prefijo(m) { var x = String(m).match(/([A-Z]+)\d+[A-Z]?$/); return x ? x[1] : ""; }
+  // filtro de secundarios: "todo" | "sin" (ocultarlos) | "solo" (ver solo ellos)
+  function modoSec() { return $("filtroSec").value; }
+  function esSec(m) { return (C.prefijosOcultables || []).indexOf(prefijo(m)) >= 0; }
+  function oculta(m) { var f = modoSec(); return f === "sin" ? esSec(m) : f === "solo" ? !esSec(m) : false; }
+  async function aplicarFiltro() {
+    if (!ultimo) return;
+    if (ultimo.modo === "solo" && ultimo.visibles.length) {
+      // igual que "Mostrar solo los seleccionados" del visor
+      var sel = selector(ultimo.visibles), ok = false;
+      try {
+        ok = await API.viewer.isolateEntities(sel.modelObjectIds.map(function (g) {
+          return { modelId: g.modelId, entityIds: g.objectRuntimeIds };
+        }));
+      } catch (e) { ok = false; }
+      if (ok === false) {
+        // respaldo: ocultar explícitamente todo lo que no es secundario
+        var ver = {};
+        sel.modelObjectIds.forEach(function (g) { g.objectRuntimeIds.forEach(function (id) { ver[g.modelId + ":" + id] = 1; }); });
+        var ocultar = todosIds.map(function (g) {
+          return { modelId: g.modelId, objectRuntimeIds: g.objectRuntimeIds.filter(function (id) { return !ver[g.modelId + ":" + id]; }) };
+        }).filter(function (g) { return g.objectRuntimeIds.length; });
+        if (ocultar.length) await API.viewer.setObjectState({ modelObjectIds: ocultar }, { visible: false });
+      }
+    }
+    if (ultimo.ocultas.length) await API.viewer.setObjectState(selector(ultimo.ocultas), { visible: false });
+  }
+  function textoFiltro() {
+    return ultimo && ultimo.modo === "sin" ? " (est. principal, sin " + textoOcultables() + ")"
+      : ultimo && ultimo.modo === "solo" ? " (solo " + (C.prefijosOcultables || []).join(", ") + ")" : "";
+  }
+  // tornillos: clase IFC de fijación, o accesorio cuyo nombre/descripción indique perno
+  function esTornillo(o) {
+    var cl = String(o.class || "").toUpperCase();
+    if (/FASTENER/.test(cl)) return true;
+    if (!/ACCESSORY|PROXY/.test(cl)) return false;
+    var t = ((o.product && (o.product.name + " " + (o.product.description || ""))) || "") + " " + (o.name || "");
+    return /\b(bolt|perno|tornillo|tuerca|arandela|nut|washer|anchor)/i.test(t);
+  }
+  function textoOcultables() {
+    var p = (C.prefijosOcultables || []).slice();
+    if (C.ocultarTornillos !== false) p.push("tornillos");
+    return p.join(", ");
+  }
+
+  // Orden en que se asigna el avance dentro de una misma marca (lo más avanzado va primero).
+  // Se agrupa cada 0.5 m en el eje principal para que piezas alineadas se ordenen por el secundario.
+  function comparadorOrden(modo) {
+    var ejes = { xy: [[0, 1], [1, 1]], yx: [[1, 1], [0, 1]], xy_: [[0, -1], [1, -1]], yx_: [[1, -1], [0, -1]], z: [[2, 1], [0, 1]] }[modo] || [[0, 1], [1, 1]];
+    var paso = 0.5;
+    return function (a, b) {
+      if (a.c && b.c) {
+        var p = ejes[0], s = ejes[1];
+        var da = Math.round(a.c[p[0]] / paso), db = Math.round(b.c[p[0]] / paso);
+        if (da !== db) return (da - db) * p[1];
+        if (Math.abs(a.c[s[0]] - b.c[s[0]]) > 1e-3) return (a.c[s[0]] - b.c[s[0]]) * s[1];
+      } else if (a.c || b.c) return a.c ? -1 : 1;
+      return (a.id || a.ids[0]) - (b.id || b.ids[0]);
+    };
+  }
+
+  async function colorear(soloReleer) {
+    if (!API) return;
+    ocupado(true);
+    try {
+      await verificarAcceso();
+      var proyecto = $("proyecto").value.trim();
+      guardarLocal("proyecto:" + $("proyecto").dataset.pid, proyecto);
+      guardarLocal("orden:" + $("proyecto").dataset.pid, $("orden").value);
+      if (!indice) await indexar();
+      if (!Object.keys(indice).length) {
+        estado("No encontré marcas en los modelos cargados. Revisa en «Diagnóstico» en qué propiedad está la marca.", true);
+        return;
+      }
+      var fu = $("fuente").value;
+      filas = fu === "sp" ? await leerSharePoint() : fu === "tc" ? await leerTrimble() : await leerArchivo();
+      var sumas = L.sumarAvance(filas, proyecto, C.etapas);
+      datosEnv = L.sumarEnvios(filas, proyecto);
+      var envios = datosEnv.envios, nE = envios.length;
+      if (nE && (envSelUltimo || envios.indexOf(envSel) < 0)) { envSel = envios[nE - 1]; envSelUltimo = true; }
+      var porEnvio = $("modoColor").value === "envio";
+      if (porEnvio && !nE) { porEnvio = false; estado("El archivo no trae números de envío; se colorea por etapa.", true); }
+      var envCub = [[]].concat(envios.map(function () { return []; }));
+      var envRes = [];
+      var colores = [C.colorSinAvance].concat(C.etapas.map(function (e) { return e.color; }));
+      var cubetas = colores.map(function () { return []; });
+      var resumen = [], ocultas = [], visibles = [], modo = modoSec();
+      if (modo !== "todo" && C.ocultarTornillos !== false) Array.prototype.push.apply(ocultas, tornillos);
+      Object.keys(indice).sort().forEach(function (m) {
+        if (oculta(m)) { if (modo === "sin") Array.prototype.push.apply(ocultas, indice[m]); return; }
+        if (modo === "solo") Array.prototype.push.apply(visibles, indice[m]);
+        var inst = indice[m].slice().sort(comparadorOrden($("orden").value));
+        var s = sumas[m] || C.etapas.map(function () { return 0; });
+        var rep = L.repartir(inst.length, s);
+        // las primeras piezas reciben la etapa más avanzada
+        var pos = 0, kg = rep.map(function () { return 0; }), kgTot = 0;
+        for (var b = rep.length - 1; b >= 0; b--) {
+          for (var q = 0; q < rep[b]; q++) { var it = inst[pos++]; cubetas[b].push(it); kg[b] += it.peso || 0; kgTot += it.peso || 0; }
+        }
+        resumen.push({ marca: m, total: inst.length, rep: rep, kg: kg, kgTot: kgTot, reportado: !!sumas[m] });
+        // por envío: en orden correlativo, el envío más antiguo toma las primeras piezas del orden elegido
+        var lst = datosEnv.porMarca[m] || [], p2 = 0, repE = envCub.map(function () { return 0; }), kgE = repE.slice(), envM = [];
+        lst.forEach(function (x) {
+          var k = envios.indexOf(x.envio) + 1;
+          for (var q = 0; q < x.q && p2 < inst.length; q++) { var it2 = inst[p2++]; envCub[k].push(it2); repE[k]++; kgE[k] += it2.peso || 0; }
+          envM.push(x.envio);
+        });
+        for (; p2 < inst.length; p2++) { envCub[0].push(inst[p2]); repE[0]++; kgE[0] += inst[p2].peso || 0; }
+        envRes.push({ marca: m, total: inst.length, rep: repE, kg: kgE, kgTot: kgTot, envios: envM,
+                      ultimo: envM.length ? envM[envM.length - 1] : "", reportado: lst.length > 0 });
+      });
+      var nombres = ["Sin avance"].concat(C.etapas.map(function (e) { return e.nombre; }));
+      if (porEnvio) {
+        cubetas = envCub;
+        colores = [C.colorSinAvance].concat(L.coloresEnvios(envios, envSel));
+        nombres = ["Sin envío"].concat(envios.map(function (e) { return "Envío " + e; }));
+      }
+      estado("Aplicando colores…");
+      await API.viewer.setObjectState(undefined, { color: "reset", visible: "reset" });
+      if (C.atenuarResto) await API.viewer.setObjectState(undefined, { color: { r: 225, g: 225, b: 225, a: 70 } });
+      for (var c = 0; c < colores.length; c++) {
+        if (cubetas[c].length) await API.viewer.setObjectState(selector(cubetas[c]), { color: L.rgba(colores[c], 255) });
+      }
+      if (porEnvio) resumen = envRes.slice().sort(function (x, y) {
+        if (!!x.ultimo !== !!y.ultimo) return x.ultimo ? -1 : 1;
+        if (x.ultimo !== y.ultimo) return Number(y.ultimo) - Number(x.ultimo);
+        return x.marca < y.marca ? -1 : 1;
+      });
+      else resumen.sort(function (x, y) {
+        var ax = x.total - x.rep[0], ay = y.total - y.rep[0];
+        if ((ax > 0) !== (ay > 0)) return ax > 0 ? -1 : 1;
+        if (ax > 0) {
+          for (var i = x.rep.length - 1; i >= 1; i--) if (x.rep[i] !== y.rep[i]) return y.rep[i] - x.rep[i];
+        }
+        return x.marca < y.marca ? -1 : 1;
+      });
+      var noEnc = Object.keys(sumas).filter(function (m) { return !indice[m] && !oculta(m); });
+      if (porEnvio) noEnc = Object.keys(datosEnv.porMarca).filter(function (m) { return !indice[m] && !oculta(m); });
+      ultimo = { resumen: resumen, noEnc: noEnc, cubetas: cubetas, colores: colores, ocultas: ocultas, visibles: visibles, modo: modo,
+                 porEnvio: porEnvio, nombres: nombres, env: { envios: envios, cubetas: envCub } };
+      await aplicarFiltro();
+      pintarPanel();
+      var hora = new Date().toLocaleTimeString("es-GT", { hour: "2-digit", minute: "2-digit" });
+      $("fechaAvance").innerHTML = fechaAvance
+        ? "Avance al <b>" + fechaAvance.toLocaleString("es-GT", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" }) +
+          "</b><br><span>" + (fu === "sp" ? "fecha del " : "fecha del archivo ") + ultimoArchivo + "</span>"
+        : (ultimoArchivo ? "Archivo: " + ultimoArchivo : "");
+      estado("Leído a las " + hora + " · " + resumen.length + " marcas en el modelo" +
+        textoFiltro() + " · " + filas.length + " registros.");
+      programarAuto();
+    } catch (e) {
+      estado(e.message || String(e), true);
+    } finally {
+      ocupado(false);
+    }
+  }
+
+  function programarAuto() {
+    if (temporizador) clearInterval(temporizador);
+    if ($("fuente").value !== "csv" && C.autoActualizarMin > 0) {
+      temporizador = setInterval(function () { colorear(true); }, C.autoActualizarMin * 60000);
+    }
+  }
+
+  async function quitarColores() {
+    if (!API) return;
+    if (temporizador) clearInterval(temporizador);
+    await API.viewer.setObjectState(undefined, { color: "reset", visible: "reset" });
+    estado("Colores restablecidos.");
+  }
+
+  // ------------------------------------------------------------ panel: leyenda y tabla
+  function ton(kg) { return (kg / 1000).toLocaleString("es-GT", { minimumFractionDigits: 1, maximumFractionDigits: 1 }); }
+
+  var ICO_SEL = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M4 3l7 17 2.5-7.5L21 10z"/></svg>';
+  var ICO_OJO = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7S1 12 1 12z"/><circle cx="12" cy="12" r="3"/></svg>';
+
+  function pintarLeyendaEnvio() {
+    var u = ultimo, envs = u.env.envios, n = envs.length, cuentas = [], kgs = [], kgTot = 0, pzTot = 0;
+    for (var i = 0; i <= n; i++) {
+      cuentas[i] = u.cubetas[i].length;
+      kgs[i] = u.cubetas[i].reduce(function (a, x) { return a + (x.peso || 0); }, 0);
+      kgTot += kgs[i]; pzTot += cuentas[i];
+    }
+    var pct = function (kg) { return kgTot ? (100 * kg / kgTot).toFixed(1) + "%" : ""; };
+    // grupos de color: último (naranja), elegido (azul fuerte), enviados antes (azul), sin enviar (gris)
+    var kUlt = n, kSel = envs.indexOf(envSel) + 1, grupos = [];
+    var suma = function (ks) {
+      var lst = [], pz = 0, kg = 0;
+      ks.forEach(function (k) { Array.prototype.push.apply(lst, u.cubetas[k]); pz += cuentas[k]; kg += kgs[k]; });
+      return { lst: lst, pz: pz, kg: kg };
+    };
+    grupos.push(Object.assign({ nombre: "Último envío " + envs[n - 1], color: L.COLOR_SEL }, suma([kUlt])));
+    if (kSel > 0 && kSel !== kUlt) grupos.push(Object.assign({ nombre: "Envío elegido " + envSel, color: L.COLOR_ELEGIDO }, suma([kSel])));
+    var antes = []; for (var k = 1; k < n; k++) if (k !== kSel) antes.push(k);
+    grupos.push(Object.assign({ nombre: "Enviado antes <span style='color:#9ca3af'>(" + antes.length + " envíos)</span>", color: L.COLOR_ENVIADO }, suma(antes)));
+    grupos.push(Object.assign({ nombre: "Sin enviar", color: C.colorSinAvance }, suma([0])));
+    u.grupos = grupos;
+    var desp = kgTot - kgs[0], despPz = pzTot - cuentas[0];
+    var html = '<div class="tit">Envíos</div>' +
+      '<div class="acum"><span class="en">Enviado</span><div class="bar"><span style="width:' + (kgTot ? (100 * desp / kgTot).toFixed(1) : 0) +
+      '%;background:' + L.COLOR_ENVIADO + '"></span></div><span class="vl">' + pct(desp) + " · " + ton(desp) + " t · " + despPz + " pzas</span></div>" +
+      '<table class="ley"><thead><tr><th>Color</th><th class="num">Pzas</th><th class="num">Ton</th><th class="num">% peso</th><th></th></tr></thead><tbody>' +
+      grupos.map(function (g, gi) {
+        var acc = g.pz ? '<button class="ico" data-gsel="' + gi + '" title="Seleccionar en el modelo">' + ICO_SEL + "</button>" +
+          '<button class="ico" data-gsolo="' + gi + '" title="Mostrar solo estas piezas">' + ICO_OJO + "</button>" : "";
+        return "<tr" + (!g.pz ? ' class="vacia"' : "") + '><td><span class="sw" style="background:' + g.color + '"></span>' + g.nombre +
+          '</td><td class="num">' + g.pz + '</td><td class="num">' + ton(g.kg) + '</td><td class="num">' + pct(g.kg) + '</td><td class="accs">' + acc + "</td></tr>";
+      }).join("") +
+      '<tr class="tot"><td>Total en modelo</td><td class="num">' + pzTot + '</td><td class="num">' + ton(kgTot) +
+      '</td><td class="num">100%</td><td class="accs"><button class="ico" id="btnTodo" title="Volver a mostrar todo el modelo">' + ICO_OJO + "</button></td></tr>" +
+      "</tbody></table>" +
+      '<details style="margin-top:8px"><summary>Detalle por envío (' + n + ")</summary>" +
+      '<div class="scrollLey"><table class="ley"><thead><tr><th>Envío</th><th class="num">Pzas</th><th class="num">Ton</th><th></th></tr></thead><tbody>' +
+      envs.map(function (e, k) { return k + 1; }).reverse().map(function (k) {
+        var acc = cuentas[k] ? '<button class="ico" data-sel="' + k + '" title="Seleccionar en el modelo">' + ICO_SEL + "</button>" +
+          '<button class="ico" data-solo="' + k + '" title="Mostrar solo estas piezas">' + ICO_OJO + "</button>" : "";
+        return "<tr" + (!cuentas[k] ? ' class="vacia"' : "") + '><td><span class="sw" style="background:' + u.colores[k] + '"></span>' + envs[k - 1] +
+          ' <span style="color:#9ca3af">#' + k + '</span></td><td class="num">' + cuentas[k] + '</td><td class="num">' + ton(kgs[k]) +
+          '</td><td class="accs">' + acc + "</td></tr>";
+      }).join("") + "</tbody></table></div></details>";
+    $("leyenda").innerHTML = html;
+    $("encTabla").innerHTML = "<th>Marca</th><th class='num'>Pzas</th><th class='num'>Ton</th><th class='num' title='Piezas enviadas'>Env</th>" +
+      "<th class='num'>Últ. envío</th><th></th>";
+  }
+
+  // ------------------------------------------------------------ cuadro del envío seleccionado (último por defecto)
+  function pintarCardEnvio() {
+    var sec = $("secEnvio");
+    if (!datosEnv || !datosEnv.envios.length) { sec.style.display = "none"; return; }
+    sec.style.display = "";
+    var envs = datosEnv.envios, k = envs.indexOf(envSel), esUlt = k === envs.length - 1;
+    $("selEnvio").innerHTML = envs.slice().reverse().map(function (e, i) {
+      return '<option value="' + e + '"' + (e === envSel ? " selected" : "") + ">Envío " + e + (i === 0 ? " (último)" : "") + "</option>";
+    }).join("");
+    $("titEnvio").textContent = esUlt ? "Último envío" : "Envío seleccionado";
+    $("numEnvio").innerHTML = envSel + "<span>n.º " + (k + 1) + " de " + envs.length + "</span>";
+    $("numEnvio").style.color = esUlt ? L.COLOR_SEL : L.COLOR_ELEGIDO;
+    document.querySelector(".cardEnv").style.borderLeftColor = esUlt ? L.COLOR_SEL : L.COLOR_ELEGIDO;
+    // marcas del envío: peso del listado de producción (Peso Uni) o, si no viene, del modelo
+    var lineas = [], pz = 0, kg = 0;
+    Object.keys(datosEnv.porMarca).forEach(function (m) {
+      datosEnv.porMarca[m].forEach(function (x) {
+        if (x.envio !== envSel) return;
+        var enModelo = !!(indice && indice[m]);
+        var pu = datosEnv.pesoUni[m] || (enModelo ? (indice[m].reduce(function (a, it) { return a + (it.peso || 0); }, 0) / indice[m].length) : 0);
+        lineas.push({ marca: m, q: x.q, kg: pu * x.q, enModelo: enModelo });
+        pz += x.q; kg += pu * x.q;
+      });
+    });
+    lineas.sort(function (a, b) { return b.kg - a.kg || (a.marca < b.marca ? -1 : 1); });
+    var acumKg = 0;
+    envs.slice(0, k + 1).forEach(function (e) {
+      Object.keys(datosEnv.porMarca).forEach(function (m) {
+        datosEnv.porMarca[m].forEach(function (x) { if (x.envio === e) acumKg += (datosEnv.pesoUni[m] || 0) * x.q; });
+      });
+    });
+    $("kpisEnvio").innerHTML = "<div><b>" + lineas.length + "</b><span>marcas</span></div><div><b>" + pz.toLocaleString("es-GT") +
+      "</b><span>piezas</span></div><div><b>" + ton(kg) + "</b><span>toneladas</span></div>" +
+      (acumKg ? "<div><b>" + ton(acumKg) + "</b><span>t acumuladas</span></div>" : "");
+    $("cuerpoEnvio").innerHTML = lineas.map(function (l) {
+      return '<tr class="click" data-m="' + l.marca + '"><td' + (l.enModelo ? "" : ' class="fuera" title="No está en el modelo cargado"') + ">" + l.marca +
+        (l.enModelo ? "" : " (no en modelo)") + '</td><td class="num">' + l.q + '</td><td class="num">' + (l.kg ? ton(l.kg) : "") + "</td></tr>";
+    }).join("");
+    var hay = ultimo && ultimo.env && (ultimo.env.cubetas[k + 1] || []).length;
+    $("btnSelEnv").disabled = $("btnSoloEnv").disabled = !hay;
+  }
+
+
+  async function cambiarEnvioSel(e) {
+    envSel = e; envSelUltimo = datosEnv && e === datosEnv.envios[datosEnv.envios.length - 1];
+    if (ultimo && ultimo.porEnvio) {
+      var envs = ultimo.env.envios, nE = envs.length;
+      ultimo.colores = [C.colorSinAvance].concat(L.coloresEnvios(envs, envSel));
+      try {
+        for (var c = 1; c < ultimo.colores.length; c++) {
+          if (ultimo.cubetas[c].length) await API.viewer.setObjectState(selector(ultimo.cubetas[c]), { color: L.rgba(ultimo.colores[c], 255) });
+        }
+      } catch (er) {}
+    }
+    pintarPanel();
+  }
+
+  function pintarLeyenda() {
+    if (ultimo && ultimo.porEnvio) return pintarLeyendaEnvio();
+    var nombres = ["Sin avance"].concat(C.etapas.map(function (e) { return e.nombre; }));
+    var colores = [C.colorSinAvance].concat(C.etapas.map(function (e) { return e.color; }));
+    var cuentas = colores.map(function () { return 0; }), kgs = colores.map(function () { return 0; }), kgTot = 0, pzTot = 0;
+    if (ultimo) ultimo.resumen.forEach(function (r) {
+      r.rep.forEach(function (v, i) { cuentas[i] += v; kgs[i] += r.kg[i]; pzTot += v; });
+      kgTot += r.kgTot;
+    });
+    var orden = C.etapas.map(function (e, i) { return i + 1; }).concat([0]);
+    var pct = function (kg) { return kgTot ? (100 * kg / kgTot).toFixed(1) + "%" : ""; };
+    var html = '<div class="tit">Estado actual de las piezas</div>' +
+      '<table class="ley"><thead><tr><th>Etapa</th><th class="num">Pzas</th><th class="num">Ton</th><th class="num">% peso</th><th></th></tr></thead><tbody>' +
+      orden.map(function (i) {
+        var acc = ultimo && cuentas[i]
+          ? '<button class="ico" data-sel="' + i + '" title="Seleccionar en el modelo las ' + cuentas[i] + ' piezas en ' + nombres[i] + '">' + ICO_SEL + "</button>" +
+            '<button class="ico" data-solo="' + i + '" title="Mostrar solo las piezas en ' + nombres[i] + '">' + ICO_OJO + "</button>"
+          : "";
+        return '<tr' + (ultimo && !cuentas[i] ? ' class="vacia"' : "") + '><td><span class="sw" style="background:' + colores[i] + '"></span>' +
+          nombres[i] + '</td><td class="num">' + (ultimo ? cuentas[i].toLocaleString("es-GT") : "") + '</td><td class="num">' +
+          (ultimo ? ton(kgs[i]) : "") + '</td><td class="num">' + (ultimo ? pct(kgs[i]) : "") + '</td><td class="accs">' + acc + "</td></tr>";
+      }).join("") +
+      (ultimo ? '<tr class="tot"><td>Total en modelo</td><td class="num">' + pzTot.toLocaleString("es-GT") + '</td><td class="num">' + ton(kgTot) +
+        '</td><td class="num">100%</td><td class="accs"><button class="ico" id="btnTodo" title="Volver a mostrar todo el modelo">' + ICO_OJO + "</button></td></tr>" : "") +
+      "</tbody></table>";
+    if (ultimo && kgTot > 0) {
+      // lo que ya pasó por cada etapa (lo montado también se armó, pintó y despachó)
+      var acum = 0, alc = [], alcPz = [], accPz = 0;
+      for (var j = C.etapas.length; j >= 1; j--) { acum += kgs[j]; accPz += cuentas[j]; alc[j - 1] = acum; alcPz[j - 1] = accPz; }
+      html += '<div class="tit" style="margin-top:10px">Avance acumulado <span style="font-weight:400;color:#6b7280">(lo que ya pasó por cada etapa)</span></div>' +
+        C.etapas.map(function (e, i) {
+          var p = 100 * alc[i] / kgTot;
+          return '<div class="acum"><span class="en">' + e.nombre + '</span><div class="bar"><span style="width:' + p.toFixed(1) + "%;background:" + e.color +
+            '"></span></div><span class="vl">' + p.toFixed(1) + "% · " + ton(alc[i]) + " t · " + alcPz[i] + " pzas</span></div>";
+        }).join("");
+    }
+    if (ultimo) html += '<div class="nota">' + ICO_SEL + " selecciona en el modelo · " + ICO_OJO + " muestra solo esa etapa</div>";
+    $("leyenda").innerHTML = html;
+    $("encTabla").innerHTML = "<th>Marca</th><th class='num'>Pzas</th><th class='num'>Ton</th>" +
+      C.etapas.map(function (e) { return "<th class='num' title='Piezas que ya pasaron por " + e.nombre + "'>" + e.nombre.slice(0, 3) + "</th>"; }).join("") +
+      "<th></th>";
+  }
+
+  function pintarPanel() {
+    pintarLeyenda();
+    pintarCardEnvio();
+    if (!ultimo) return;
+    var f = $("filtro").value.trim().toUpperCase();
+    var colores = ultimo.colores;
+    if (ultimo.porEnvio) {
+      $("cuerpo").innerHTML = ultimo.resumen.filter(function (r) { return !f || r.marca.indexOf(f) >= 0; })
+        .map(function (r) {
+          var env = r.total - r.rep[0];
+          var barra = r.rep.map(function (v, i) {
+            return v ? '<span style="width:' + (100 * v / r.total) + '%;background:' + colores[i] + '"></span>' : "";
+          });
+          barra = barra.slice(1).concat(barra[0]).join("");
+          return '<tr class="click" data-m="' + r.marca + '"' + (env > 0 ? "" : ' style="color:#9ca3af"') + ' title="Envíos: ' +
+            (r.envios.join(", ") || "ninguno") + '"><td>' + r.marca + "</td><td class='num'>" + r.total + "</td><td class='num'>" +
+            (r.kgTot ? ton(r.kgTot) : "") + "</td><td class='num'>" + (env || "") + "</td><td class='num'" +
+            (r.ultimo === envSel ? " style='color:" + COLOR_ENV_SEL + ";font-weight:700'" : "") + ">" + (r.ultimo || "") +
+            '</td><td><div class="barra">' + barra + "</div></td></tr>";
+        }).join("");
+      $("noEncontradas").innerHTML = ultimo.noEnc.length
+        ? '<div class="aviso">Enviadas según el archivo pero no encontradas en los modelos cargados: ' + ultimo.noEnc.join(", ") + "</div>" : "";
+      return;
+    }
+    $("cuerpo").innerHTML = ultimo.resumen.filter(function (r) { return !f || r.marca.indexOf(f) >= 0; })
+      .map(function (r) {
+        var alc = []; var acum = 0;
+        for (var i = r.rep.length - 1; i >= 1; i--) { acum += r.rep[i]; alc[i - 1] = acum; }
+        var barra = r.rep.map(function (v, i) {
+          return v ? '<span style="width:' + (100 * v / r.total) + '%;background:' + colores[i] + '"></span>' : "";
+        });
+        barra = barra.slice(1).reverse().concat(barra[0]).join("");
+        return '<tr class="click" data-m="' + r.marca + '"' + (r.total - r.rep[0] > 0 ? "" : ' style="color:#9ca3af"') + '><td>' +
+          r.marca + "</td><td class='num'>" + r.total + "</td><td class='num'>" + (r.kgTot ? ton(r.kgTot) : "") + "</td>" +
+          alc.map(function (v) { return "<td class='num'>" + (v || "") + "</td>"; }).join("") +
+          '<td><div class="barra">' + barra + "</div></td></tr>";
+      }).join("");
+    $("noEncontradas").innerHTML = ultimo.noEnc.length
+      ? '<div class="aviso">Reportadas en SharePoint pero no encontradas en los modelos cargados: ' + ultimo.noEnc.join(", ") + "</div>"
+      : "";
+  }
+
+  async function seleccionarEtapa(i, solo) {
+    if (!ultimo || !ultimo.cubetas[i].length) return;
+    return seleccionarLista(ultimo.cubetas[i], solo, ultimo.nombres ? ultimo.nombres[i] : (i === 0 ? "Sin avance" : C.etapas[i - 1].nombre));
+  }
+
+  async function seleccionarLista(lista, solo, nombre) {
+    if (!lista || !lista.length) return;
+    var sel = selector(lista);
+    try {
+      if (solo) {
+        // igual que "Mostrar solo los seleccionados" del visor
+        var ok = false;
+        try {
+          ok = await API.viewer.isolateEntities(sel.modelObjectIds.map(function (g) {
+            return { modelId: g.modelId, entityIds: g.objectRuntimeIds };
+          }));
+        } catch (e) { ok = false; }
+        if (ok === false) {
+          // respaldo: ocultar explícitamente todo lo demás
+          var mostrar = {};
+          sel.modelObjectIds.forEach(function (g) { g.objectRuntimeIds.forEach(function (id) { mostrar[g.modelId + ":" + id] = 1; }); });
+          var ocultar = todosIds.map(function (g) {
+            return { modelId: g.modelId, objectRuntimeIds: g.objectRuntimeIds.filter(function (id) { return !mostrar[g.modelId + ":" + id]; }) };
+          }).filter(function (g) { return g.objectRuntimeIds.length; });
+          if (ocultar.length) await API.viewer.setObjectState({ modelObjectIds: ocultar }, { visible: false });
+          await API.viewer.setObjectState(sel, { visible: true });
+        }
+      }
+      if (solo && ultimo.ocultas.length) await API.viewer.setObjectState(selector(ultimo.ocultas), { visible: false });
+      await API.viewer.setSelection(sel, "set");
+      await API.viewer.setCamera(sel, { animationTime: 400 });
+      var kg = lista.reduce(function (s, x) { return s + (x.peso || 0); }, 0);
+      estado((solo ? "Mostrando solo " : "Seleccionadas: ") + nombre + " · " + lista.length + " piezas · " + ton(kg) + " t");
+    } catch (e) { estado("No se pudo seleccionar: " + (e.message || e), true); }
+  }
+
+  async function mostrarTodo() {
+    try {
+      if (todosIds.length) await API.viewer.setObjectState({ modelObjectIds: todosIds }, { visible: true });
+      await API.viewer.setObjectState(undefined, { visible: "reset" });
+      await aplicarFiltro();
+      estado("Se muestran todos los objetos" + textoFiltro() + ".");
+    } catch (e) {}
+  }
+
+  async function seleccionarMarca(m) {
+    if (!indice || !indice[m]) return;
+    var sel = selector(indice[m]);
+    try {
+      await API.viewer.setSelection(sel, "set");
+      await API.viewer.setCamera(sel, { animationTime: 400 });
+    } catch (e) {}
   }
 
   // ------------------------------------------------------------ diagnóstico
@@ -560,91 +829,96 @@
       if (!sel.length || !sel[0].objectRuntimeIds || !sel[0].objectRuntimeIds.length) { out.textContent = "No hay nada seleccionado."; return; }
       var mid = sel[0].modelId, id = sel[0].objectRuntimeIds[0];
       var p = (await API.viewer.getObjectProperties(mid, [id]))[0] || {};
-      var txt = "Clase: " + (p.class || "") + "\nProduct.Name: " + (p.product && p.product.name || "") + "\n";
-      if (modelo) {
-        var k = modelo.porRid[mid + ":" + id];
-        if (k !== undefined) {
-          var x = modelo.ins[k], pt = x.partes.filter(function (q) { return q.id === id; })[0];
-          txt += "Ensamble: " + x.marca + " · clave " + x.key + " · fase: " + ((fase(datos.asign[x.key]) || {}).nombre || "(sin fase)") + "\n";
-          if (pt) txt += "Pieza: " + pt.spm + " · rol " + pt.rol + " · tipo para listados: " + L.tipoParte(pt, C) + "\n";
-        } else txt += "No pertenece a ningún ensamble leído.\n";
-      }
-      txt += "\n";
-      (p.properties || []).forEach(function (s) { (s.properties || []).forEach(function (q) { txt += s.name + "." + q.name + " = " + q.value + "\n"; }); });
-      out.textContent = txt + (diagAcceso ? "\n" + diagAcceso : "");
+      var txt = "Clase: " + (p.class || "") + "\nProduct.Name: " + (p.product && p.product.name || "") +
+        "\nMarca detectada: " + (L.marcaDeObjeto(p, C.propiedadesMarca) || "(ninguna)") + "\n\n";
+      (p.properties || []).forEach(function (s) {
+        (s.properties || []).forEach(function (q) { txt += s.name + "." + q.name + " = " + q.value + "\n"; });
+      });
+      try {
+        var hijos = await API.viewer.getHierarchyChildren(mid, [id], 4, false);
+        if (hijos && hijos.length) {
+          var hp = (await API.viewer.getObjectProperties(mid, [hijos[0].id]))[0] || {};
+          txt += "\n--- Primera pieza del ensamble (" + (hp.class || "") + ") ---\nProduct.Name: " + (hp.product && hp.product.name || "") +
+            "\nMarca detectada: " + (L.marcaDeObjeto(hp, C.propiedadesMarca) || "(ninguna)") + "\n";
+          (hp.properties || []).forEach(function (s) {
+            (s.properties || []).forEach(function (q) { txt += s.name + "." + q.name + " = " + q.value + "\n"; });
+          });
+        }
+      } catch (e) {}
+      try {
+        var padres = await API.viewer.getHierarchyParents(mid, [id], 4, false);
+        if (padres && padres.length) {
+          var pp = (await API.viewer.getObjectProperties(mid, [padres[0].id]))[0] || {};
+          txt += "\n--- Ensamble padre (" + (pp.class || "") + ") ---\nProduct.Name: " + (pp.product && pp.product.name || "") +
+            "\nMarca detectada: " + (L.marcaDeObjeto(pp, C.propiedadesMarca) || "(ninguna)") + "\n";
+          (pp.properties || []).forEach(function (s) {
+            (s.properties || []).forEach(function (q) { txt += s.name + "." + q.name + " = " + q.value + "\n"; });
+          });
+        }
+      } catch (e) {}
+      out.textContent = txt + (diagAcceso ? "\n\n" + diagAcceso : "");
     } catch (e) { out.textContent = "Error: " + (e.message || e); }
   }
 
-  // ------------------------------------------------------------ eventos
-  $("btnLeer").addEventListener("click", leerModelo);
-  $("btnColor").addEventListener("click", colorear);
+  // ------------------------------------------------------------ eventos de la página
+  $("fuente").addEventListener("change", function () {
+    $("cajaCSV").style.display = this.value === "csv" ? "block" : "none";
+    guardarLocal("fuente", this.value);
+  });
+  var f0 = leerLocal("fuente") || (C.clientId ? "sp" : "tc");
+  $("fuente").value = f0; $("cajaCSV").style.display = f0 === "csv" ? "block" : "none";
+  $("btnColorear").addEventListener("click", function () { colorear(false); });
+  $("orden").addEventListener("change", function () { if (ultimo) colorear(false); });
+  // botones Todas / Sin secundarios / Solo secundarios
+  $("txtSec").textContent = "Secundarios: " + textoOcultables();
+  function marcarFiltro(v) {
+    $("filtroSec").value = v;
+    Array.prototype.forEach.call(document.querySelectorAll("#grupoSec button"), function (b) { b.classList.toggle("act", b.dataset.f === v); });
+  }
+  var fGuard = leerLocal("filtroSec") || (leerLocal("ocultarCT") === "1" ? "sin" : "todo");
+  marcarFiltro(/^(todo|sin|solo)$/.test(fGuard) ? fGuard : "todo");
+  $("grupoSec").addEventListener("click", function (ev) {
+    var b = ev.target.closest("button"); if (!b || b.dataset.f === $("filtroSec").value) return;
+    marcarFiltro(b.dataset.f); guardarLocal("filtroSec", b.dataset.f); if (ultimo) colorear(false);
+  });
   $("btnReset").addEventListener("click", quitarColores);
-  $("chips").addEventListener("click", function (ev) {
-    var b = ev.target.closest("button.chip"); if (!b || !modelo) return;
-    if (b.dataset.p === "*") chipsSel = {}; else chipsSel[b.dataset.p] = !chipsSel[b.dataset.p];
-    pintarChips(); aplicarChips().catch(function (e) { estado(e.message || e, true); });
-  });
-  $("soloSinFase").addEventListener("change", function () { if (modelo && Object.keys(chipsSel).some(function (k) { return chipsSel[k]; })) aplicarChips(); });
-  $("btnMarcas").addEventListener("click", function () {
-    if (!modelo) { estado("Primero presiona «Leer modelo».", true); return; }
-    var re = patronMarcas($("marcas").value); if (!re) return;
-    var l = filtroSinFase(modelo.ins.filter(function (x) { return re.test(x.marca); }));
-    seleccionar(l, l.length + " ensambles coinciden.").catch(function (e) { estado(e.message || e, true); });
-  });
-  $("marcas").addEventListener("keydown", function (e) { if (e.key === "Enter") $("btnMarcas").click(); });
-  $("btnLimpiar").addEventListener("click", function () { chipsSel = {}; pintarChips(); if (API) seleccionar([]); });
-  $("btnNueva").addEventListener("click", crearFase);
-  $("nuevaFase").addEventListener("keydown", function (e) { if (e.key === "Enter") crearFase(); });
-  $("faseActiva").addEventListener("change", function () { guardarLocal("activa:" + pid, this.value); pintarFases(); });
-  $("btnAsignar").addEventListener("click", function () { asignar(false); });
-  $("btnQuitar").addEventListener("click", function () { asignar(true); });
-  $("btnListSel").addEventListener("click", async function () {
-    try {
-      var l = await instanciasSeleccion(), por = {};
-      l.forEach(function (x) { var n = (fase(datos.asign[x.key]) || {}).nombre || "Sin fase"; (por[n] = por[n] || []).push(x); });
-      exportar(Object.keys(por).map(function (n) { return { fase: n, instancias: por[n] }; }), "Seleccion");
-    } catch (e) { estado(e.message || e, true); }
-  });
-  $("cuerpoFases").addEventListener("click", function (ev) {
-    var ren = ev.target.closest("[data-ren]"); if (ren) return renombrar(ren);
-    var b = ev.target.closest("button"); if (!b) return;
-    var d = b.dataset, nom = function (id) { return id ? fase(id).nombre : "Sin fase"; };
-    if (d.sel !== undefined) return seleccionar(instFase(d.sel), "Seleccionada: " + nom(d.sel));
-    if (d.solo !== undefined) return mostrarSolo(instFase(d.solo), nom(d.solo));
-    if (d.xls !== undefined) return exportarFase(d.xls);
-    if (d.borrar !== undefined) return borrarFase(d.borrar);
-  });
-  $("cuerpoFases").addEventListener("change", function (ev) {
-    var id = ev.target.dataset && ev.target.dataset.color; if (!id) return;
-    var f = fase(id); f.color = ev.target.value; pend.fases[id] = f; marcarCambio();
-  });
-  $("btnGuardarTC").addEventListener("click", guardarTC);
-  $("btnXlsTodas").addEventListener("click", exportarTodas);
-  $("btnRecargarTC").addEventListener("click", function () { recargarTC(false).catch(function (e) { estado(e.message || e, true); }); });
-  $("subirListados").checked = leerLocal("subirListados") === "1";
-  $("subirListados").addEventListener("change", function () { guardarLocal("subirListados", this.checked ? "1" : "0"); });
-  $("btnDescJSON").addEventListener("click", function () {
-    var d = combinar(datos); d.proyecto = $("proyecto").value.trim(); d.alias = $("alias").value.trim(); d.actualizado = new Date().toISOString();
-    descargar(new Blob([JSON.stringify(d, null, 1)], { type: "application/json" }), nombreArchivoFases().replace(/\.json$/i, "_" + hoy() + ".json"));
-  });
-  $("btnCargarJSON").addEventListener("click", function () { $("archivoJSON").click(); });
-  $("archivoJSON").addEventListener("change", function () {
-    var f = this.files[0]; if (!f) return;
-    var rd = new FileReader();
-    rd.onload = function () {
-      try {
-        var d = JSON.parse(rd.result); if (!d.fases || !d.asign) throw new Error("no es un archivo de PrograFAB");
-        // todo lo del archivo queda como cambio pendiente para poder guardarlo en Trimble Connect
-        d.fases.forEach(function (x) { pend.fases[x.id] = x; });
-        Object.keys(d.asign).forEach(function (k) { pend.asign[k] = d.asign[k]; });
-        datos = combinar(d); marcarCambio();
-        estado("Fases cargadas de " + f.name + ". Presiona «Guardar en Trimble Connect» para compartirlas.");
-      } catch (e) { estado("No se pudo leer el archivo: " + (e.message || e), true); }
-    };
-    rd.readAsText(f);
-  });
   $("btnDiag").addEventListener("click", diagnostico);
-
-  pintarFases();
+  $("filtro").addEventListener("input", pintarPanel);
+  $("leyenda").addEventListener("click", function (ev) {
+    var b = ev.target.closest("button"); if (!b) return;
+    if (b.id === "btnTodo") return mostrarTodo();
+    if (b.dataset.sel !== undefined) return seleccionarEtapa(+b.dataset.sel, false);
+    if (b.dataset.solo !== undefined) return seleccionarEtapa(+b.dataset.solo, true);
+    if (b.dataset.gsel !== undefined) { var g = ultimo.grupos[+b.dataset.gsel]; return seleccionarLista(g.lst, false, g.nombre.replace(/<[^>]+>/g, "")); }
+    if (b.dataset.gsolo !== undefined) { var g2 = ultimo.grupos[+b.dataset.gsolo]; return seleccionarLista(g2.lst, true, g2.nombre.replace(/<[^>]+>/g, "")); }
+  });
+  $("cuerpo").addEventListener("click", function (ev) {
+    var tr = ev.target.closest("tr[data-m]"); if (tr) seleccionarMarca(tr.dataset.m);
+  });
+  // Colorear por Etapa / Envío
+  function marcarModo(v) {
+    $("modoColor").value = v;
+    Array.prototype.forEach.call(document.querySelectorAll("#grupoModo button"), function (b) { b.classList.toggle("act", b.dataset.m === v); });
+  }
+  marcarModo(leerLocal("modoColor") === "envio" ? "envio" : "etapa");
+  $("grupoModo").addEventListener("click", function (ev) {
+    var b = ev.target.closest("button"); if (!b || b.dataset.m === $("modoColor").value) return;
+    marcarModo(b.dataset.m); guardarLocal("modoColor", b.dataset.m); verResaltar(); if (ultimo) colorear(false);
+  });
+  // cuadro del envío
+  $("selEnvio").addEventListener("change", function () { cambiarEnvioSel(this.value); });
+  function verResaltar() {}
+  function listaEnvioSel() {
+    if (!ultimo || !ultimo.env || !datosEnv) return [];
+    return ultimo.env.cubetas[datosEnv.envios.indexOf(envSel) + 1] || [];
+  }
+  $("btnSelEnv").addEventListener("click", function () { seleccionarLista(listaEnvioSel(), false, "Envío " + envSel); });
+  $("btnSoloEnv").addEventListener("click", function () { seleccionarLista(listaEnvioSel(), true, "Envío " + envSel); });
+  $("btnTodoEnv").addEventListener("click", function () { mostrarTodo(); });
+  $("cuerpoEnvio").addEventListener("click", function (ev) {
+    var tr = ev.target.closest("tr[data-m]"); if (tr) seleccionarMarca(tr.dataset.m);
+  });
+  verResaltar();
+  pintarLeyenda();
   conectar();
 })();

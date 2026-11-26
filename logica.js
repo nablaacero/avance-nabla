@@ -1,232 +1,270 @@
-// PrograFAB - lógica pura (sin Trimble Connect) para poder probarla aparte.
+// Lógica pura (sin dependencias de Trimble Connect) para poder probarla aparte.
 (function (raiz) {
   "use strict";
 
-  function num(v) {
+  function normalizarMarca(m) {
+    if (m === undefined || m === null) return "";
+    return String(m).replace(/\(\?\)/g, "").trim().toUpperCase();
+  }
+
+  function normalizarEtapa(e, etapas) {
+    var t = String(e || "").trim().toLowerCase()
+      .normalize("NFD").replace(/[̀-ͯ]/g, "");
+    for (var i = 0; i < etapas.length; i++) {
+      var n = etapas[i].nombre.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "");
+      if (t === n) return i;
+    }
+    return -1;
+  }
+
+  // Busca la marca de un objeto de Trimble Connect según la lista de propiedades candidatas
+  function marcaDeObjeto(obj, candidatos) {
+    for (var c = 0; c < candidatos.length; c++) {
+      var cand = candidatos[c];
+      var p = cand.indexOf(".");
+      var set = cand.slice(0, p), prop = cand.slice(p + 1);
+      if (set === "Product") {
+        // el nombre de producto solo se usa en objetos ensamble (en las piezas es "BEAM", "PLATE"…)
+        if (String(obj.class || "").toUpperCase().indexOf("ASSEMBLY") < 0) continue;
+        var pv = obj.product && obj.product[prop.charAt(0).toLowerCase() + prop.slice(1)];
+        // una marca debe tener al menos una letra (descarta nombres como "-10033")
+        if (pv && /[A-Za-z]/.test(String(pv))) return normalizarMarca(pv);
+        continue;
+      }
+      var sets = obj.properties || [];
+      for (var s = 0; s < sets.length; s++) {
+        if ((sets[s].name || "").toLowerCase() !== set.toLowerCase()) continue;
+        var props = sets[s].properties || [];
+        for (var k = 0; k < props.length; k++) {
+          if ((props[k].name || "").toLowerCase() === prop.toLowerCase() && props[k].value !== "" && props[k].value !== null &&
+              /[A-Za-z]/.test(String(props[k].value))) {
+            return normalizarMarca(props[k].value);
+          }
+        }
+      }
+    }
+    return "";
+  }
+
+  // Suma lo reportado por marca y etapa para un proyecto.
+  // filas: [{marca, proyecto, etapa, cantidad}]
+  function sumarAvance(filas, proyecto, etapas) {
+    var res = {};
+    var proy = String(proyecto || "").trim();
+    filas.forEach(function (f) {
+      if (proy && String(f.proyecto || "").trim() !== proy) return;
+      var m = normalizarMarca(f.marca);
+      var e = normalizarEtapa(f.etapa, etapas);
+      var q = Number(String(f.cantidad || "0").replace(",", "."));
+      if (!m || e < 0 || !isFinite(q)) return;
+      if (!res[m]) res[m] = etapas.map(function () { return 0; });
+      res[m][e] += q;
+    });
+    return res;
+  }
+
+  // Para una marca con 'total' piezas y sumas por etapa, devuelve cuántas piezas
+  // quedan en cada etapa como máxima alcanzada: [sinAvance, etapa0, etapa1, ...]
+  // Regla: lo que llegó a una etapa posterior también pasó por las anteriores.
+  function repartir(total, sumas) {
+    var n = sumas.length;
+    var alc = sumas.map(function (q) { return Math.max(0, Math.min(total, Math.round(q))); });
+    for (var i = n - 2; i >= 0; i--) alc[i] = Math.max(alc[i], alc[i + 1]);
+    var out = [total - alc[0]];
+    for (var j = 0; j < n; j++) out.push(alc[j] - (j + 1 < n ? alc[j + 1] : 0));
+    return out;
+  }
+
+  // CSV -> matriz de celdas (separador , o ;, comillas)
+  function tokenizarCSV(texto) {
+    texto = String(texto).replace(/^\uFEFF/, "");
+    var primera = texto.split(/\r?\n/)[0] || "";
+    var sep = (primera.split(";").length > primera.split(",").length) ? ";" : ",";
+    var filas = [], fila = [], campo = "", comillas = false;
+    for (var i = 0; i < texto.length; i++) {
+      var ch = texto[i];
+      if (comillas) {
+        if (ch === '"') {
+          if (texto[i + 1] === '"') { campo += '"'; i++; } else comillas = false;
+        } else campo += ch;
+      } else if (ch === '"') comillas = true;
+      else if (ch === sep) { fila.push(campo); campo = ""; }
+      else if (ch === "\n" || ch === "\r") {
+        if (ch === "\r" && texto[i + 1] === "\n") i++;
+        fila.push(campo); campo = ""; filas.push(fila); fila = [];
+      } else campo += ch;
+    }
+    if (campo !== "" || fila.length) { fila.push(campo); filas.push(fila); }
+    return filas;
+  }
+
+  function norm(h) {
+    return String(h === undefined || h === null ? "" : h).trim().toLowerCase()
+      .normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/\s+/g, " ");
+  }
+
+  // Columnas que representan una etapa en un listado "por columnas" (ej. Enviadas = Despacho)
+  var SINONIMOS = [
+    { etapa: "Armado",   re: /^(armad|armado)/ },
+    { etapa: "Pintura",  re: /^(pintad|pintura)/ },
+    { etapa: "Despacho", re: /^(enviad|despach)/ },
+    { etapa: "Montaje",  re: /^(montad|montaje)/ }
+  ];
+
+  // Matriz (CSV o Excel) -> [{marca, proyecto, etapa, cantidad}]
+  // Acepta: (A) exportación de la lista (Marca, Proyecto, Etapa, Cantidad)
+  //         (B) listado por columnas: Orden Pieza / Marca + columnas Enviadas, Montadas, etc.
+  function leerTabla(m) {
+    var limite = Math.min(m.length, 25);
+    for (var r = 0; r < limite; r++) {
+      var enc = (m[r] || []).map(norm);
+      var col = function (nombres) {
+        for (var a = 0; a < nombres.length; a++) { var k = enc.indexOf(nombres[a]); if (k >= 0) return k; }
+        return -1;
+      };
+      var cM = col(["marca", "titulo", "title", "orden pieza", "ensamble", "marca ensamble", "assembly mark"]);
+      if (cM < 0) continue;
+      var cP = col(["proyecto", "codigo", "project"]);
+      var cE = col(["etapa"]), cQ = col(["cantidad"]);
+      var cO = col(["observaciones", "observacion", "envio", "no. envio", "numero de envio"]);
+      var cW = col(["peso uni", "peso unitario", "peso uni.", "peso (kg)", "peso kg"]);
+      var datos = m.slice(r + 1).filter(function (f) {
+        var v = norm(f && f[cM]); return v && v !== "totales" && v !== "total";
+      });
+      var limpiar = function (marca, proy) {
+        var t = String(marca).trim();
+        var p = String(proy || "").trim();
+        if (p && t.indexOf(p + "-") === 0) t = t.slice(p.length + 1);
+        else { var mm = t.match(/^(\d{3,5})-(.+)$/); if (mm) { t = mm[2]; if (!p) p = mm[1]; } }
+        return { marca: t, proyecto: p };
+      };
+      if (cE >= 0 && cQ >= 0) {
+        return datos.map(function (f) {
+          var x = limpiar(f[cM], cP >= 0 ? f[cP] : "");
+          var env = cO >= 0 ? numeroEnvio(f[cO]) : "";
+          return { marca: x.marca, proyecto: x.proyecto, etapa: f[cE], cantidad: f[cQ], envio: env };
+        });
+      }
+      // columnas de envío: encabezado = número correlativo (ej. 6304) o "Envío 6304"
+      var colsEnvio = [];
+      (m[r] || []).forEach(function (h, i) {
+        var t = String(h === undefined || h === null ? "" : h).trim();
+        var mm = t.match(/^(?:env[ií]o\s*(?:n[o°º.]*\s*)?)?(\d{3,7})$/i);
+        if (mm && i !== cM && i !== cP) colsEnvio.push({ i: i, envio: mm[1] });
+      });
+      var colsEtapa = [];
+      enc.forEach(function (h, i) {
+        if (!h || /peso|pendiente|kg|ton/.test(h)) return;
+        SINONIMOS.forEach(function (s) {
+          // si hay columnas por envío, el despacho sale de ellas (no de "Enviadas", que es su suma)
+          if (s.re.test(h) && !(colsEnvio.length && s.etapa === "Despacho")) colsEtapa.push({ i: i, etapa: s.etapa });
+        });
+      });
+      if (!colsEtapa.length && !colsEnvio.length) continue;
+      var out = [];
+      var num = function (v) { return Number(String(v === undefined || v === null ? "" : v).replace(",", ".")); };
+      datos.forEach(function (f) {
+        var x = limpiar(f[cM], cP >= 0 ? f[cP] : "");
+        var pu = cW >= 0 ? num(f[cW]) : NaN;
+        colsEnvio.forEach(function (c) {
+          var q = num(f[c.i]);
+          if (q > 0) out.push({ marca: x.marca, proyecto: x.proyecto, etapa: "Despacho", cantidad: q, envio: c.envio, pesoUni: pu > 0 ? pu : 0 });
+        });
+        colsEtapa.forEach(function (c) {
+          var q = num(f[c.i]);
+          if (q > 0) out.push({ marca: x.marca, proyecto: x.proyecto, etapa: c.etapa, cantidad: q, pesoUni: pu > 0 ? pu : 0 });
+        });
+      });
+      return out;
+    }
+    throw new Error("No reconozco el formato: necesito columnas Marca/Etapa/Cantidad, o una columna de marca (ej. «Orden Pieza») con columnas Enviadas, Montadas, etc.");
+  }
+
+  function leerCSV(texto) { return leerTabla(tokenizarCSV(texto)); }
+
+  // "Envío 6324" / "6324" / "Env. No. 6324" -> "6324"
+  function numeroEnvio(v) {
+    var m = String(v === undefined || v === null ? "" : v).match(/(?:^|env[ií]o\D{0,6})(\d{3,7})\b/i);
+    return m ? m[1] : "";
+  }
+
+  // Envíos por marca: { marca: [{envio, q}] } en orden correlativo, y lista de envíos ordenada
+  function sumarEnvios(filas, proyecto) {
+    var proy = String(proyecto || "").trim(), por = {}, todos = {}, peso = {};
+    filas.forEach(function (f) {
+      if (!f.envio) return;
+      if (proy && String(f.proyecto || "").trim() !== proy) return;
+      var m = normalizarMarca(f.marca), q = Number(String(f.cantidad || "0").replace(",", "."));
+      if (!m || !(q > 0)) return;
+      var k = (por[m] = por[m] || {});
+      k[f.envio] = (k[f.envio] || 0) + q;
+      todos[f.envio] = 1;
+      if (f.pesoUni > 0) peso[m] = f.pesoUni;
+    });
+    var orden = function (a, b) { return Number(a) - Number(b) || (a < b ? -1 : 1); };
+    var envios = Object.keys(todos).sort(orden);
+    var res = {};
+    Object.keys(por).forEach(function (m) {
+      res[m] = Object.keys(por[m]).sort(orden).map(function (e) { return { envio: e, q: por[m][e] }; });
+    });
+    return { porMarca: res, envios: envios, pesoUni: peso };
+  }
+
+  // Paleta de colores contrastantes para envíos (sin grises ni naranja, que se reservan)
+  var PALETA_ENV = ["#1F5FD6", "#2CA02C", "#8E44AD", "#D62728", "#17BECF", "#B8B800",
+                    "#E377C2", "#8C564B", "#FFB000", "#0B2E6B", "#00A087", "#7F3C8D"];
+  var COLOR_SEL = "#E8622C", COLOR_ANTERIORES = "#C9D6E8";
+
+  // Solo 4 colores: último envío = naranja; envío elegido en el cuadro (si no es el último) = azul fuerte;
+  // los demás envíos = azul; sin enviar = gris (lo pone el panel)
+  var COLOR_ENVIADO = "#5B9BD5", COLOR_ELEGIDO = "#0B2E6B";
+  function coloresEnvios(envios, sel) {
+    var n = envios.length;
+    return envios.map(function (e, i) {
+      if (i === n - 1) return COLOR_SEL;
+      if (e === sel) return COLOR_ELEGIDO;
+      return COLOR_ENVIADO;
+    });
+  }
+  function colorEnvio(k, n) { return PALETA_ENV[(n - 1 - k) % PALETA_ENV.length]; }
+
+  // "#2EAA4A" -> {r,g,b,a} opaco (Trimble Connect conserva la transparencia anterior si se manda solo el hex)
+  function rgba(hex, a) {
+    var h = String(hex).replace("#", "");
+    return { r: parseInt(h.slice(0, 2), 16), g: parseInt(h.slice(2, 4), 16), b: parseInt(h.slice(4, 6), 16), a: a === undefined ? 255 : a };
+  }
+
+  function aNumero(v) {
     if (typeof v === "number") return v;
-    var m = String(v === undefined || v === null ? "" : v).replace(/\s/g, "").match(/-?\d+(?:[.,]\d+)?/);
+    var m = String(v || "").replace(/\s/g, "").match(/-?\d+(?:[.,]\d+)?/);
     return m ? parseFloat(m[0].replace(",", ".")) : NaN;
   }
-  function n0(v) { var x = num(v); return isFinite(x) ? x : 0; }
-  function cmpNat(a, b) { return String(a).localeCompare(String(b), "es", { numeric: true, sensitivity: "base" }); }
 
-  // valor de una propiedad del grupo indicado (sin importar mayúsculas)
-  function prop(obj, set, nombre) {
-    var sets = obj.properties || [];
-    for (var s = 0; s < sets.length; s++) {
-      if (String(sets[s].name || "").toLowerCase() !== set.toLowerCase()) continue;
-      var ps = sets[s].properties || [];
-      for (var k = 0; k < ps.length; k++) if (String(ps[k].name || "").toLowerCase() === nombre.toLowerCase()) return ps[k].value;
-    }
-    return undefined;
-  }
-
-  // Objeto de Trimble Connect -> pieza (o null si no trae las propiedades de Nabla)
-  function leerParte(obj, C) {
-    var g = function (n) { return prop(obj, C.pset, n); };
-    var rol = g("ModelRole");
-    if (rol === undefined && g("SinglePartMark") === undefined) return null;
-    var sp = String(g("SinglePartMark") || "").trim();
-    return {
-      id: obj.id,
-      spm: sp,
-      mpm: String(g("MainPartMark") || "").trim(),
-      rol: String(rol || "").trim(),
-      nombre: String(g("ElementName") || (obj.product && obj.product.name) || "").trim(),
-      perfil: String(g("Profile") || "").trim(),
-      largo: n0(g("LengthNet_mm")),
-      peso: n0(g("WeightNet_kg")),
-      pintura: n0(g("PaintArea_m2")),
-      esp: n0(g("Thickness_mm")),
-      areaPl: n0(g("PlateArea_m2")),
-      ent: String(g("IfcEntity") || obj.class || "").toUpperCase(),
-      main: /^\.?t/i.test(String(g("IsMainPart") || "")) || g("IsMainPart") === true,
-      handle: String(g("Handle") || "").trim(),
-      material: String(g("Material") || "").trim()
-    };
-  }
-
-  // prefijo de la marca: letras iniciales (CL8100 -> CL, PAC8001 -> PAC)
-  function prefijo(m) { var x = String(m || "").toUpperCase().match(/^[A-Z]+/); return x ? x[0] : "(sin prefijo)"; }
-
-  // "PL 1/2"x0.2032x3.7339" -> { espTxt:'1/2"', a:0.2032, b:3.7339 } (m)
-  function dimsPL(nombre) {
-    var m = String(nombre || "").match(/^\s*PL\s*([\d\s\/.]+)\s*(?:"|in|'')?\s*x\s*([\d.]+)\s*x\s*([\d.]+)/i);
-    if (!m) return null;
-    return { espTxt: m[1].trim() + '"', a: parseFloat(m[2]), b: parseFloat(m[3]) };
-  }
-
-  function esPlaca(p) { return /PLATE/.test(p.ent) || /^\s*PL\b/i.test(p.nombre); }
-  function esRecta(p, tol) {
-    var d = dimsPL(p.nombre);
-    if (!d || !p.areaPl) return false;
-    var ab = d.a * d.b;
-    return ab > 0 && Math.abs(ab - p.areaPl) / ab <= (tol || 0.01);
-  }
-
-  // tipo de pieza para los resúmenes
-  function tipoParte(p, C) {
-    if ((C.rolesNoFabrica || []).indexOf(p.rol) >= 0 || /FASTENER/.test(p.ent)) return "nofab";
-    var pat = (C.rolesPatin || []).indexOf(p.rol) >= 0, alm = (C.rolesAlma || []).indexOf(p.rol) >= 0;
-    if (esPlaca(p)) {
-      if (pat || alm) return esRecta(p, C.tolRecta) ? (pat ? "patin" : "alma") : "armadoNoRecto";
-      return "placa";
-    }
-    return "perfil";
-  }
-
-  // texto de espesor para una placa
-  function espesorTxt(p) {
-    var d = dimsPL(p.nombre);
-    if (d) return "PL " + d.espTxt;
-    return p.esp ? "PL " + p.esp + " mm" : "PL ?";
-  }
-
-  // -------------------------------------------------------------- listado (columnas A a M del 2 ASM)
-  // grupos: [{ marca, cant, partes }]  (partes = piezas de UNA instancia representativa)
-  function filasListado(grupos, meta, C) {
-    var aoa = [];
-    var tot = { ens: 0, kg: 0, m2: 0 };
-    grupos.slice().sort(function (a, b) { return cmpNat(a.marca, b.marca); }).forEach(function (g) {
-      var partes = g.partes.filter(function (p) { return tipoParte(p, C) !== "nofab"; });
-      var main = partes.filter(function (p) { return p.main; })[0] || partes[0] || {};
-      aoa.push([meta.alias, meta.proy, g.marca, g.cant, main.perfil || main.nombre || "", "", "", "", "", "", "", "", ""]);
-      var por = {};
-      partes.forEach(function (p) {
-        var k = p.spm || p.nombre;
-        (por[k] = por[k] || { p: p, q: 0 }).q++;
-      });
-      var kgA = 0, m2A = 0;
-      Object.keys(por).sort(cmpNat).forEach(function (k) {
-        var x = por[k], p = x.p;
-        aoa.push([meta.alias, meta.proy, p.spm, x.q, p.nombre, r3(p.peso), "", r3(p.peso * x.q), "", r3(p.pintura), r3(p.pintura * x.q), p.rol, ""]);
-        kgA += p.peso * x.q; m2A += p.pintura * x.q;
-      });
-      aoa.push(["", "", "", "", "", "[Wn]Assembly", "", r3(kgA), "", "[A]Assembly", r3(m2A), "", ""]);
-      tot.ens += g.cant; tot.kg += kgA * g.cant; tot.m2 += m2A * g.cant;
-    });
-    return { aoa: aoa, tot: tot };
-  }
-  function r3(x) { return Math.round((x || 0) * 1000) / 1000; }
-  function r2(x) { return Math.round((x || 0) * 100) / 100; }
-
-  // -------------------------------------------------------------- metros lineales y placas
-  // instancias: [{ marca, partes }] (todas las instancias de la fase, una por ensamble físico)
-  function resumenMateriales(instancias, C) {
-    var perf = {}, pa = {}, noRecto = {}, placas = {}, nofab = 0;
-    instancias.forEach(function (ins) {
-      ins.partes.forEach(function (p) {
-        var t = tipoParte(p, C);
-        if (t === "nofab") { nofab++; return; }
-        if (t === "perfil") {
-          var k = p.perfil || p.nombre || "(sin perfil)";
-          var r = perf[k] = perf[k] || { perfil: k, material: p.material, pz: 0, m: 0, kg: 0 };
-          r.pz++; r.m += (p.largo || 0) / 1000; r.kg += p.peso;
-        } else if (t === "patin" || t === "alma") {
-          var d = dimsPL(p.nombre);
-          var ancho = Math.round(Math.min(d.a, d.b) * 1000), largo = Math.max(d.a, d.b);
-          var k2 = t + "|" + d.espTxt + "|" + ancho;
-          var r2_ = pa[k2] = pa[k2] || { tipo: t === "patin" ? "Patín" : "Alma", esp: "PL " + d.espTxt, espMm: p.esp, ancho: ancho, material: p.material, pz: 0, m: 0, kg: 0 };
-          r2_.pz++; r2_.m += largo; r2_.kg += p.peso;
-        } else {
-          var bolsa = t === "armadoNoRecto" ? noRecto : placas;
-          var k3 = (t === "armadoNoRecto" ? p.rol + "|" : "") + espesorTxt(p);
-          var r3_ = bolsa[k3] = bolsa[k3] || { rol: p.rol, esp: espesorTxt(p), espMm: p.esp, pz: 0, m2: 0, kg: 0 };
-          r3_.pz++; r3_.m2 += p.areaPl || 0; r3_.kg += p.peso;
+  // Peso (kg) de un objeto: primero propiedades de la lista, luego "… | 1366.7 kg" en la descripción
+  function pesoDeObjeto(obj, candidatos) {
+    for (var c = 0; c < candidatos.length; c++) {
+      var cand = candidatos[c], p = cand.indexOf(".");
+      var set = cand.slice(0, p), prop = cand.slice(p + 1);
+      var sets = obj.properties || [];
+      for (var s = 0; s < sets.length; s++) {
+        if ((sets[s].name || "").toLowerCase() !== set.toLowerCase()) continue;
+        var props = sets[s].properties || [];
+        for (var k = 0; k < props.length; k++) {
+          if ((props[k].name || "").toLowerCase() === prop.toLowerCase()) {
+            var v = aNumero(props[k].value);
+            if (isFinite(v) && v > 0) return v;
+          }
         }
-      });
-    });
-    var vals = function (o) { return Object.keys(o).map(function (k) { return o[k]; }); };
-    return {
-      perfiles: vals(perf).sort(function (a, b) { return cmpNat(a.perfil, b.perfil); }),
-      patinesAlmas: vals(pa).sort(function (a, b) { return a.tipo < b.tipo ? 1 : a.tipo > b.tipo ? -1 : (a.espMm - b.espMm) || (a.ancho - b.ancho); }),
-      noRectos: vals(noRecto).sort(function (a, b) { return cmpNat(a.rol, b.rol) || (a.espMm - b.espMm); }),
-      placas: vals(placas).sort(function (a, b) { return a.espMm - b.espMm || cmpNat(a.esp, b.esp); }),
-      noFabricadas: nofab
-    };
+      }
+    }
+    var d = obj.product && obj.product.description;
+    var m = d && String(d).match(/([\d.,]+)\s*kg/i);
+    if (m) { var w = aNumero(m[1]); if (isFinite(w) && w > 0) return w; }
+    return 0;
   }
 
-  function filasMateriales(res) {
-    var aoa = [], sum = function (l, k) { return l.reduce(function (s, x) { return s + (x[k] || 0); }, 0); };
-    aoa.push(["1. PERFILES — metros lineales por perfil"]);
-    aoa.push(["Perfil", "Material", "Piezas", "Metros lineales", "Peso (kg)"]);
-    res.perfiles.forEach(function (r) { aoa.push([r.perfil, r.material, r.pz, r2(r.m), r2(r.kg)]); });
-    aoa.push(["Total perfiles", "", sum(res.perfiles, "pz"), r2(sum(res.perfiles, "m")), r2(sum(res.perfiles, "kg"))]);
-    aoa.push([]);
-    aoa.push(["2. PATINES Y ALMAS RECTOS — metros lineales por sección de placa (espesor x ancho)"]);
-    aoa.push(["Tipo", "Espesor", "Ancho (mm)", "Piezas", "Metros lineales", "Peso (kg)", "Material"]);
-    res.patinesAlmas.forEach(function (r) { aoa.push([r.tipo, r.esp, r.ancho, r.pz, r2(r.m), r2(r.kg), r.material]); });
-    aoa.push(["Total patines y almas rectos", "", "", sum(res.patinesAlmas, "pz"), r2(sum(res.patinesAlmas, "m")), r2(sum(res.patinesAlmas, "kg"))]);
-    aoa.push([]);
-    aoa.push(["3. PATINES Y ALMAS NO RECTOS (acartelados) — se cortan de plancha"]);
-    aoa.push(["Rol", "Espesor", "Piezas", "Área de placa (m²)", "Peso (kg)"]);
-    res.noRectos.forEach(function (r) { aoa.push([r.rol, r.esp, r.pz, r2(r.m2), r2(r.kg)]); });
-    aoa.push(["Total no rectos", "", sum(res.noRectos, "pz"), r2(sum(res.noRectos, "m2")), r2(sum(res.noRectos, "kg"))]);
-    aoa.push([]);
-    aoa.push(["4. OTRAS PLACAS — por espesor"]);
-    aoa.push(["Espesor", "", "Piezas", "Área de placa (m²)", "Peso (kg)"]);
-    res.placas.forEach(function (r) { aoa.push([r.esp, "", r.pz, r2(r.m2), r2(r.kg)]); });
-    aoa.push(["Total otras placas", "", sum(res.placas, "pz"), r2(sum(res.placas, "m2")), r2(sum(res.placas, "kg"))]);
-    aoa.push([]);
-    var kg = sum(res.perfiles, "kg") + sum(res.patinesAlmas, "kg") + sum(res.noRectos, "kg") + sum(res.placas, "kg");
-    aoa.push(["PESO TOTAL DE LA SELECCIÓN (kg)", "", "", "", r2(kg)]);
-    if (res.noFabricadas) aoa.push(["No incluye " + res.noFabricadas + " objetos con rol «no se fabrica» (pernos, anclajes…)"]);
-    return aoa;
-  }
-
-
-  // -------------------------------------------------------------- detalle por espesor (placas) y por perfil
-  // instancias: [{ marca, fase, partes }]. Devuelve grupos ordenados con sus filas (una por fase + marca de pieza)
-  function detalleMateriales(instancias, C) {
-    var pl = {}, pf = {};
-    var nombreTipo = { placa: "Placa", patin: "Patín recto", alma: "Alma recta", armadoNoRecto: "Acartelada" };
-    instancias.forEach(function (ins) {
-      ins.partes.forEach(function (p) {
-        var t = tipoParte(p, C);
-        if (t === "nofab") return;
-        var fase = ins.fase || "";
-        if (t === "perfil") {
-          var gk = p.perfil || p.nombre || "(sin perfil)";
-          var g = pf[gk] = pf[gk] || { grupo: gk, orden: gk, filas: {} };
-          var fk = fase + "|" + p.spm + "|" + Math.round(p.largo);
-          var f = g.filas[fk] = g.filas[fk] || { fase: fase, spm: p.spm, desc: p.nombre, rol: p.rol, material: p.material,
-                                                 largo: Math.round(p.largo), cant: 0, m: 0, kgU: p.peso, kg: 0, ens: {} };
-          f.cant++; f.m += p.largo / 1000; f.kg += p.peso; f.ens[ins.marca] = (f.ens[ins.marca] || 0) + 1;
-        } else {
-          var esp = espesorTxt(p);
-          var g2 = pl[esp] = pl[esp] || { grupo: esp, orden: p.esp || 999, filas: {} };
-          var fk2 = fase + "|" + p.spm + "|" + p.nombre;
-          var f2 = g2.filas[fk2] = g2.filas[fk2] || { fase: fase, spm: p.spm, desc: p.nombre, rol: p.rol, tipo: nombreTipo[t] || t,
-                                                     material: p.material, cant: 0, m2: 0, kgU: p.peso, kg: 0, ens: {} };
-          f2.cant++; f2.m2 += p.areaPl || 0; f2.kg += p.peso; f2.ens[ins.marca] = (f2.ens[ins.marca] || 0) + 1;
-        }
-      });
-    });
-    var cerrar = function (o, cmpG) {
-      return Object.keys(o).map(function (k) {
-        var g = o[k];
-        g.filas = Object.keys(g.filas).map(function (x) {
-          var f = g.filas[x];
-          f.ensTxt = Object.keys(f.ens).sort(cmpNat).map(function (m) { return m + " (" + f.ens[m] + ")"; }).join(", ");
-          f.nEns = Object.keys(f.ens).length;
-          return f;
-        }).sort(function (a, b) { return cmpNat(a.fase, b.fase) || cmpNat(a.spm, b.spm) || cmpNat(a.desc, b.desc); });
-        g.cant = g.filas.reduce(function (s, f) { return s + f.cant; }, 0);
-        g.kg = g.filas.reduce(function (s, f) { return s + f.kg; }, 0);
-        g.m = g.filas.reduce(function (s, f) { return s + (f.m || 0); }, 0);
-        g.m2 = g.filas.reduce(function (s, f) { return s + (f.m2 || 0); }, 0);
-        return g;
-      }).sort(cmpG);
-    };
-    return {
-      placas: cerrar(pl, function (a, b) { return a.orden - b.orden || cmpNat(a.grupo, b.grupo); }),
-      perfiles: cerrar(pf, function (a, b) { return cmpNat(a.grupo, b.grupo); })
-    };
-  }
-
-  var api = { num: num, prop: prop, leerParte: leerParte, prefijo: prefijo, dimsPL: dimsPL, esRecta: esRecta,
-              tipoParte: tipoParte, filasListado: filasListado, resumenMateriales: resumenMateriales,
-              filasMateriales: filasMateriales, cmpNat: cmpNat, detalleMateriales: detalleMateriales, espesorTxt: espesorTxt };
+  var api = { rgba: rgba, pesoDeObjeto: pesoDeObjeto, normalizarMarca: normalizarMarca, normalizarEtapa: normalizarEtapa, marcaDeObjeto: marcaDeObjeto,
+              sumarAvance: sumarAvance, repartir: repartir, sumarEnvios: sumarEnvios, colorEnvio: colorEnvio, coloresEnvios: coloresEnvios, COLOR_ANTERIORES: COLOR_ANTERIORES, COLOR_ENVIADO: COLOR_ENVIADO, COLOR_ELEGIDO: COLOR_ELEGIDO, COLOR_SEL: COLOR_SEL, numeroEnvio: numeroEnvio, leerCSV: leerCSV, leerTabla: leerTabla, tokenizarCSV: tokenizarCSV };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
-  else raiz.LogicaPF = api;
+  else raiz.Logica = api;
 })(this);
