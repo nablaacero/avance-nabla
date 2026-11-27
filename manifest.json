@@ -2,7 +2,9 @@
   "title": "Avance NABLA",
   "description": "Colorea el modelo según el avance de producción registrado con la app de Power Apps (Armado, Pintura, Despacho, Montaje).",
   "url": "https://nablaacero.github.io/avance-nabla/index.html",
-  "icon": "https://nablaacero.github.io/avance-nabla/icono-v2.png",
+  "icon": "https://nablaacero.github.io/avance-nabla/icono-v3.png",
   "infoUrl": "https://nablaacero.github.io/avance-nabla/ayuda.html",
-  "extensionType": ["3dviewer"]
+  "extensionType": [
+    "3dviewer"
+  ]
 }
